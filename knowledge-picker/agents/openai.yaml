@@ -1,0 +1,4 @@
+interface:
+  display_name: "Knowledge Picker"
+  short_description: "Collect web knowledge into Obsidian with local media"
+  default_prompt: "Use $knowledge-picker to collect this article into my Obsidian vault as original-language Markdown with all article media saved locally."
