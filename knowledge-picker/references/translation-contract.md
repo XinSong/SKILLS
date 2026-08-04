@@ -5,6 +5,7 @@ Read this file before creating a Chinese translation note.
 ## Preconditions
 
 - The original Markdown note passes `verify-note.mjs`.
+- The note may have been created independently of Knowledge Picker.
 - The user explicitly requested a Chinese translation.
 - Create `<original-stem>（中文翻译）.md` beside the original note.
 - Never modify or replace the original note.

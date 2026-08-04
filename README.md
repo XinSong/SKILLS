@@ -2,40 +2,35 @@
 
 [中文](#中文) · [English](#english)
 
-An Obsidian-friendly web knowledge collector for Codex.
+An Obsidian document collector and translator for Codex.
 
 ---
 
 ## 中文
 
-`knowledge-picker` 是一个面向个人知识库的 Codex Skill。给它一个公开的
-HTTPS 文章 URL，它会使用独立浏览器采集真实页面，将原语言正文保存为
-Obsidian 友好的 Markdown，并把正文图片下载到本地。
+`knowledge-picker` 面向 Obsidian 个人知识库，只执行两个动作：采集原文，
+或者将已有 Markdown 忠实翻译为中文。它不生成摘要、解读或其他知识内容。
 
-它支持 X/Twitter Article，也支持具有明确正文结构的通用博客与文章页面，
-例如 [The Three Layers of Working With AI](https://vensas.de/en/blog/karpathy-three-layers)。
+| 输入与请求 | 执行行为 |
+| --- | --- |
+| URL，未要求翻译 | 采集原文 |
+| 本地 Markdown，明确要求中文 | 只翻译该笔记 |
+| URL，明确要求中文 | 先采集，再翻译 |
 
-默认行为是：**只保存原文，不翻译，不摘要。**
-
-只有在用户明确要求翻译为中文时，才会在保留原文笔记的同时，额外生成一份
-完整、忠实的中文翻译。翻译不是摘要、解读或改写。
+采集支持 X/Twitter Article 和具有明确正文结构的公开 HTTPS 文章页面。仅提供
+URL 时始终只保存原文；翻译必须由用户明确要求。用于独立翻译的源笔记不必由
+`knowledge-picker` 采集，但必须符合本文的 Markdown 格式并通过校验。
 
 ### 工作流程
 
 ```text
-用户提供 URL
-    ↓
-浏览器采集并在临时目录保存证据
-    ↓
-识别正文、作者、发布日期和正文图片
-    ↓
-生成原语言 Markdown 并本地化图片
-    ↓
-校验 metadata、正文、图片签名、路径、哈希和完整性
-    ↓
-发布到 Obsidian Vault 根目录
-    ↓
-删除成功采集的临时证据
+输入
+├── URL
+│   └── 采集原文 → 校验 → 保存到 Vault
+├── 本地 Markdown + 中文要求
+│   └── 忠实翻译 → 校验 → 保存同级中文副本
+└── URL + 中文要求
+    └── 采集原文 → 校验 → 翻译 → 再校验
 ```
 
 ### 成功输出
@@ -139,15 +134,23 @@ npm --prefix "$HOME/.codex/skills/knowledge-picker" \
 
 ### 在 Codex 中使用
 
-只保存原文：
+采集 URL，只保存原文：
 
 ```text
 使用 $knowledge-picker 将这个 URL 保存到我的 Obsidian Vault：
 https://vensas.de/en/blog/karpathy-three-layers
 ```
 
-保留原文，并额外生成纯中文翻译：
+独立翻译已有 Markdown：
 
+```text
+使用 $knowledge-picker 将这篇本地 Markdown 完整、忠实地翻译为中文：
+/absolute/path/to/Article title.md
+```
+
+采集 URL，并额外生成纯中文翻译：
+
+```text
 使用 $knowledge-picker 保存这个 URL，同时生成一份完整、忠实的中文翻译。
 https://example.com/article
 ```
@@ -214,37 +217,34 @@ npm --prefix knowledge-picker test
 
 ## English
 
-`knowledge-picker` is a Codex Skill for personal knowledge bases. Given a
-public HTTPS article URL, it uses a dedicated browser to collect the rendered
-page, saves the original-language article as Obsidian-friendly Markdown, and
-downloads article images locally.
+`knowledge-picker` serves an Obsidian personal knowledge base with two actions:
+collect original source material, or faithfully translate an existing Markdown
+note into Chinese. It does not generate summaries, interpretations, or new
+knowledge.
 
-It supports X/Twitter Articles and generic blogs or article pages with
-recognizable content structure, such as
-[The Three Layers of Working With AI](https://vensas.de/en/blog/karpathy-three-layers).
+| Input and request | Action |
+| --- | --- |
+| URL without translation | Collect the original |
+| Local Markdown with explicit Chinese request | Translate that note only |
+| URL with explicit Chinese request | Collect, then translate |
 
-The default is: **preserve the original only—no translation and no summary.**
-
-Only when the user explicitly requests Chinese does the workflow preserve the
-original note and add a complete, faithful Chinese translation. A translation
-is not a summary, interpretation, or rewrite.
+Collection supports X/Twitter Articles and public HTTPS article pages with a
+recognizable content boundary. A URL-only request always preserves the original
+without translation. Translation must be explicitly requested. A source note
+used for independent translation need not have been collected by
+`knowledge-picker`, but it must follow the Markdown contract and pass
+validation.
 
 ### Workflow
 
 ```text
-User provides a URL
-    ↓
-Browser capture stores evidence in staging
-    ↓
-Identify article, authors, publication date, and media
-    ↓
-Create original-language Markdown and localize images
-    ↓
-Validate metadata, content, signatures, paths, hashes, and completeness
-    ↓
-Publish at the Obsidian vault root
-    ↓
-Remove successful staging evidence
+Input
+├── URL
+│   └── Collect original → validate → publish to vault
+├── Local Markdown + Chinese request
+│   └── Faithful translation → validate → publish sibling note
+└── URL + Chinese request
+    └── Collect original → validate → translate → validate again
 ```
 
 ### Successful output
@@ -356,14 +356,22 @@ Restart Codex so it can discover `$knowledge-picker`.
 
 ### Use in Codex
 
-Preserve the original only:
+Collect a URL and preserve the original only:
 
 ```text
 Use $knowledge-picker to save this URL into my Obsidian vault:
 https://vensas.de/en/blog/karpathy-three-layers
 ```
 
-Preserve the original and add a faithful Chinese translation:
+Translate an existing Markdown note independently:
+
+```text
+Use $knowledge-picker to translate this local Markdown note completely and
+faithfully into Chinese:
+/absolute/path/to/Article title.md
+```
+
+Collect a URL and add a faithful Chinese translation:
 
 ```text
 Use $knowledge-picker to save this URL and add a complete faithful Chinese
