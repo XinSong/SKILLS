@@ -6,6 +6,16 @@ const X_HOSTS = new Set([
   "mobile.twitter.com",
 ]);
 
+const RECURSIVE_HOSTS = new Set([
+  "recursive.com",
+  "www.recursive.com",
+]);
+
+const LANGCHAIN_HOSTS = new Set([
+  "langchain.com",
+  "www.langchain.com",
+]);
+
 const ADAPTERS = {
   generic: {
     id: "generic-article",
@@ -27,12 +37,28 @@ const ADAPTERS = {
     ],
     tryCardExpansion: true,
   },
+  recursive: {
+    id: "generic-article",
+    rootSelectors: [
+      ".richtext",
+    ],
+    tryCardExpansion: false,
+  },
+  langchainBlog: {
+    id: "generic-article",
+    key: "langchain-blog",
+    rootSelectors: [
+      ".blog-post-content .w-richtext",
+      ".text-rich-text-v2-blog-post.w-richtext",
+    ],
+    tryCardExpansion: false,
+  },
 };
 
 export function resolveSiteAdapter(rawUrl, overrideId = null) {
   if (overrideId) {
     const adapter = Object.values(ADAPTERS).find(
-      (candidate) => candidate.id === overrideId,
+      (candidate) => candidate.id === overrideId || candidate.key === overrideId,
     );
     if (!adapter) {
       throw new Error(`Unknown site adapter: ${overrideId}`);
@@ -41,5 +67,8 @@ export function resolveSiteAdapter(rawUrl, overrideId = null) {
   }
 
   const hostname = new URL(rawUrl).hostname.toLowerCase();
-  return X_HOSTS.has(hostname) ? ADAPTERS.x : ADAPTERS.generic;
+  if (X_HOSTS.has(hostname)) return ADAPTERS.x;
+  if (LANGCHAIN_HOSTS.has(hostname)) return ADAPTERS.langchainBlog;
+  if (RECURSIVE_HOSTS.has(hostname)) return ADAPTERS.recursive;
+  return ADAPTERS.generic;
 }

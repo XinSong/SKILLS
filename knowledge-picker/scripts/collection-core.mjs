@@ -862,8 +862,8 @@ async function extractArticle(page, rootLocator, adapter) {
       })();
       const title =
         cleanText(root.querySelector("h1")?.innerText) ||
-        cleanText(document.querySelector('meta[property="og:title"]')?.content) ||
         cleanText(structuredArticle?.headline) ||
+        cleanText(document.querySelector('meta[property="og:title"]')?.content) ||
         cleanText(document.title.replace(/\s*\/\s*X\s*$/, ""));
       const creator =
         cleanText(document.querySelector('meta[name="twitter:creator"]')?.content) ||
@@ -1043,17 +1043,18 @@ function sniffImage(buffer, contentType = "") {
     throw new Error(`Downloaded media has non-image Content-Type: ${normalizedType}`);
   }
   if (detected.mime === "image/svg+xml") {
+    const svgText = buffer.toString("utf8");
     const unsafePatterns = [
       /<script[\s>]/i,
       /<(?:iframe|object|embed|link|meta|audio|video)[\s>]/i,
       /\son[a-z]+\s*=/i,
       /javascript\s*:/i,
-      /(?:href|src)\s*=\s*["']\s*data\s*:/i,
+      /(?:href|src)\s*=\s*["']\s*data\s*:(?!image\/(?:png|jpeg|gif|webp|avif)\s*;\s*base64\s*,)/i,
       /(?:href|src)\s*=\s*["']\s*https?:\/\//i,
       /url\(\s*["']?\s*https?:\/\//i,
       /@import\b/i,
     ];
-    if (unsafePatterns.some((pattern) => pattern.test(textPrefix))) {
+    if (unsafePatterns.some((pattern) => pattern.test(svgText))) {
       throw new Error("SVG contains active or remote content and was rejected");
     }
   }

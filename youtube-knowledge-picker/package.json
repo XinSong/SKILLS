@@ -1,0 +1,16 @@
+{
+  "name": "@ivoid/youtube-knowledge-picker",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prepare": "node scripts/prepare.mjs",
+    "publish": "node scripts/publish.mjs",
+    "verify": "node scripts/verify-video-note.mjs",
+    "test": "node --test ../tests/youtube-knowledge-picker.test.mjs"
+  }
+}

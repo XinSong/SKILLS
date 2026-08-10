@@ -1,0 +1,4 @@
+interface:
+  display_name: "YouTube Knowledge Picker"
+  short_description: "Collect course notes, source video, and reviewed PPT pages"
+  default_prompt: "Use $youtube-knowledge-picker to collect this YouTube course into chronological Obsidian notes and retain its source video outside the Vault."

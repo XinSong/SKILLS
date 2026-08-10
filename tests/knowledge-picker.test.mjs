@@ -9,6 +9,7 @@ import {
   removeMatchingFirstH1,
   verifyKnowledgeDocument,
 } from "../knowledge-picker/scripts/collection-core.mjs";
+import { resolveSiteAdapter } from "../knowledge-picker/scripts/site-adapters.mjs";
 import { verifyChineseTranslation } from "../knowledge-picker/scripts/translation-core.mjs";
 
 const PNG = Buffer.from(
@@ -19,12 +20,33 @@ const SVG = Buffer.from(
   `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
   <rect width="640" height="360" fill="#f5f5f5"/>
   <text x="40" y="180" font-family="sans-serif" font-size="28">Collection diagram</text>
+  <image href="data:image/png;base64,${PNG.toString("base64")}" x="8" y="8" width="1" height="1"/>
   <foreignObject x="40" y="220" width="300" height="80">
     <div xmlns="http://www.w3.org/1999/xhtml">Static Mermaid-style label</div>
   </foreignObject>
 </svg>`,
   "utf8",
 );
+
+test("selects the Webflow rich-text body for Recursive articles", () => {
+  const adapter = resolveSiteAdapter(
+    "https://www.recursive.com/articles/first-steps-toward-automated-ai-research",
+  );
+  assert.equal(adapter.id, "generic-article");
+  assert.deepEqual(adapter.rootSelectors, [".richtext"]);
+});
+
+test("selects only the LangChain blog rich-text body", () => {
+  const adapter = resolveSiteAdapter(
+    "https://www.langchain.com/blog/introducing-openwiki-an-open-source-agent-for-repo-documentation",
+  );
+  assert.equal(adapter.id, "generic-article");
+  assert.equal(adapter.key, "langchain-blog");
+  assert.deepEqual(adapter.rootSelectors, [
+    ".blog-post-content .w-richtext",
+    ".text-rich-text-v2-blog-post.w-richtext",
+  ]);
+});
 
 async function startFixtureServer() {
   const server = http.createServer((request, response) => {
@@ -94,6 +116,64 @@ async function startFixtureServer() {
         </figure>
       </article>
       <aside><h2>Related articles</h2><p>This must not enter the note.</p></aside>
+    </main>
+  </body>
+</html>`);
+      return;
+    }
+    if (request.url === "/langchain") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="author" content="Brace Fixture">
+    <meta name="description" content="A standfirst supplied by page metadata rather than the article body.">
+    <meta property="article:published_time" content="2026-07-01T09:00:00Z">
+    <meta property="og:image" content="/image.png">
+    <meta property="og:title" content="OpenWiki Fixture: Repo Documentation for Coding Agents">
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": "Introducing OpenWiki Fixture",
+        "author": {"@type": "Person", "name": "Brace Fixture"},
+        "datePublished": "2026-07-01T09:00:00Z"
+      }
+    </script>
+    <title>OpenWiki Fixture: Repo Documentation for Coding Agents</title>
+  </head>
+  <body>
+    <main class="main-wrapper">
+      <section class="blog-post-hero">
+        <h1>Introducing OpenWiki Fixture</h1>
+        <p>Brace Fixture</p>
+        <time datetime="2026-07-01T09:00:00Z">July 1, 2026</time>
+        <span>4</span><span>min</span>
+      </section>
+      <section class="blog-post-section">
+        <div class="blog-post-wrapper-inner">
+          <aside>
+            <a href="/blog">Go back to blog</a>
+            <a href="#why-wikis-for-agents">Why wikis for agents</a>
+            <a href="#getting-started">Getting started</a>
+          </aside>
+          <div>Share</div>
+          <div class="blog-post-content">
+            <div class="text-rich-text-v2-blog-post google-next w-richtext">
+              <p>Today we are releasing an open source agent for generating and
+              maintaining codebase documentation. This fixture provides enough
+              original prose to verify that only the article body is selected.</p>
+              <h2>Why wikis for agents</h2>
+              <p>A wiki gives humans and agents a structured way to understand a
+              codebase without forcing all context into one giant instruction
+              file. The collector must preserve this paragraph and its heading.</p>
+              <figure><img src="/image.png" width="640" height="360" alt="OpenWiki diagram"></figure>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section><h3>See what your agent is really doing</h3><p>Marketing footer copy.</p></section>
     </main>
   </body>
 </html>`);
@@ -275,6 +355,51 @@ test("captures a generic article with external title, standfirst, and SVG diagra
     assert.deepEqual(
       assetNames.map((name) => path.extname(name)).sort(),
       [".png", ".svg", ".svg"].sort(),
+    );
+  } finally {
+    await fixture.close();
+    await fs.rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("captures LangChain blog body without byline, table of contents, or footer chrome", async () => {
+  const temporaryRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), "knowledge-picker-langchain-test-"),
+  );
+  const fixture = await startFixtureServer();
+  const vaultDirectory = path.join(temporaryRoot, "vault");
+  try {
+    const result = await collectUrl({
+      allowHosts: ["127.0.0.1"],
+      allowHttp: true,
+      browser: "chrome",
+      headless: true,
+      minCharacters: 200,
+      profileDirectory: path.join(temporaryRoot, "profile"),
+      siteAdapter: "langchain-blog",
+      timeoutMs: 20_000,
+      url: `${new URL(fixture.url).origin}/langchain`,
+      vaultDirectory,
+    });
+
+    assert.equal(result.status, "passed");
+    assert.equal(result.adapter, "generic-article");
+    assert.equal(result.imageCount, 1);
+    const markdown = await fs.readFile(result.documentPath, "utf8");
+    const articleBody = markdown.replace(/^---\n[\s\S]*?\n---\n/, "");
+    assert.match(markdown, /^title: Introducing OpenWiki Fixture$/m);
+    assert.match(markdown, /^author: Brace Fixture$/m);
+    assert.match(markdown, /^published: 2026-07-01$/m);
+    assert.match(
+      articleBody,
+      /^A standfirst supplied by page metadata rather than the article body\.\n\nToday we are releasing/,
+    );
+    assert.equal((articleBody.match(/^!\[/gm) || []).length, 1);
+    assert.match(articleBody, /^## Why wikis for agents$/m);
+    assert.doesNotMatch(articleBody, /Brace Fixture|July 1, 2026|\n4\n|\nmin\n/);
+    assert.doesNotMatch(
+      articleBody,
+      /Go back to blog|Getting started|\nShare\n|Marketing footer copy/,
     );
   } finally {
     await fixture.close();

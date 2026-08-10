@@ -28,6 +28,22 @@ Selected for other public HTTPS hosts.
   support prompts, and footer content whenever the page exposes a semantic
   boundary.
 
+### `recursive.com`
+
+- Uses the Webflow `.richtext` container because Recursive article pages do
+  not expose an `article` or `main` element around the body.
+- Retains generic-article metadata, cover-image, localization, and publication
+  behavior.
+
+### `langchain.com` blog
+
+- Uses the Webflow rich-text body inside `.blog-post-content`.
+- Excludes the separately rendered byline, reading time, table of contents,
+  share controls, related content, and marketing footer.
+- Retains the byline and publication date in frontmatter through page metadata,
+  and retains generic-article standfirst, cover-image, localization, and
+  publication behavior.
+
 ## Add a specialized adapter only when needed
 
 Add a site adapter when repeated fixtures show that the generic adapter cannot
