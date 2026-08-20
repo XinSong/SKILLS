@@ -297,9 +297,12 @@ export async function publish({ bodyPath, jobDirectory }) {
     }
     for (const disposable of [
       "contact-sheets",
+      "slide-analysis.json",
       "slide-candidates",
+      "slide-stage",
       "transcript-chunks",
       "slide-candidates.json",
+      "slide-stage.json",
       "slide-review.json",
       "evidence-index.json",
       "note-body.md",

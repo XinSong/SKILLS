@@ -5,7 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { publish, validateSlideReview } from "../course-picker/scripts/publish.mjs";
 import { parseArgs, prepare } from "../course-picker/scripts/prepare.mjs";
-import { extractSlideCandidates } from "../course-picker/scripts/slides.mjs";
+import {
+  detectSlideBounds,
+  extractSlideCandidates,
+  selectBestSlideRepresentatives,
+} from "../course-picker/scripts/slides.mjs";
 import {
   buildFrontmatter,
   optionalCommand,
@@ -465,7 +469,7 @@ test("failed publication keeps the resumable job and rejects remote images", asy
   });
 });
 
-test("extracts scene-based local candidates and contact sheets with ffmpeg", async (context) => {
+test("extracts grouped candidates from one sequential scan and defers OCR to stable segments", async (context) => {
   const ffmpeg = await optionalCommand("ffmpeg");
   const ffprobe = await optionalCommand("ffprobe");
   if (!ffmpeg || !ffprobe) {
@@ -507,7 +511,11 @@ test("extracts scene-based local candidates and contact sheets with ffmpeg", asy
     });
     assert.ok(result.candidates.length >= 1);
     assert.ok(result.contact_sheets.length >= 1);
-    assert.equal(result.extraction_version, 4);
+    assert.equal(result.extraction_version, 7);
+    assert.equal(result.pipeline, "sequential-stable-state");
+    assert.equal(result.work.sequential_scan_count, 1);
+    assert.ok(result.scanned_frame_count > result.candidates.length);
+    assert.ok(result.work.ocr_count <= result.stable_segment_count);
     for (const candidate of result.candidates) {
       assert.match(candidate.name, /^\d{3}-\d{2}h\d{2}m\d{2}s\.jpg$/);
       assert.equal(candidate.crop.applied, false);
@@ -516,6 +524,97 @@ test("extracts scene-based local candidates and contact sheets with ffmpeg", asy
   } finally {
     await fs.rm(root, { force: true, recursive: true });
   }
+});
+
+test("reuses internal analysis and render checkpoints without creating a second workflow", async (context) => {
+  const ffmpeg = await optionalCommand("ffmpeg");
+  const ffprobe = await optionalCommand("ffprobe");
+  if (!ffmpeg || !ffprobe) {
+    context.skip("ffmpeg or ffprobe is not installed");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-slide-checkpoint-test-"));
+  try {
+    const video = path.join(root, "source.mp4");
+    await runCommand(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=white:s=640x360:d=3:r=10",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      video,
+    ]);
+    const first = await extractSlideCandidates({
+      duration: 3,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-checkpoint",
+      videoPath: video,
+    });
+    await fs.rm(path.join(root, "slide-candidates"), { force: true, recursive: true });
+    await fs.rm(path.join(root, "contact-sheets"), { force: true, recursive: true });
+    await fs.unlink(path.join(root, "slide-candidates.json"));
+    const resumed = await extractSlideCandidates({
+      duration: 3,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-checkpoint",
+      videoPath: video,
+    });
+    assert.equal(resumed.work.analysis_cache_hit, true);
+    assert.equal(resumed.work.sequential_scan_count, 0);
+    assert.equal(resumed.work.rendered_count, 0);
+    assert.equal(resumed.work.rendered_cache_hits, first.stable_segment_count);
+    assert.deepEqual(
+      resumed.candidates.map((candidate) => candidate.timestamp_seconds),
+      first.candidates.map((candidate) => candidate.timestamp_seconds),
+    );
+  } finally {
+    await fs.rm(root, { force: true, recursive: true });
+  }
+});
+
+test("prefers a clearer capture of the same logical page without collapsing an animation state", () => {
+  const base = {
+    absolute_path: "/tmp/unused.jpg",
+    crop: { applied: true },
+    dhash: "0000000000000000",
+    ocr: { confident_text: "A New Frontier for Scaling is Inference", word_count: 8 },
+    segment_id: "segment-0001",
+    signature: Buffer.alloc(96 * 54, 120),
+    stage_name: "segment-0001.jpg",
+    timestamp_seconds: 10,
+  };
+  const blurry = { ...base, quality: { border_luma_deficit: 0.15, score: 15 } };
+  const clear = {
+    ...base,
+    crop: { applied: false },
+    quality: { border_luma_deficit: 0, score: 9 },
+    segment_id: "segment-0002",
+    signature: Buffer.alloc(96 * 54, 126),
+    stage_name: "segment-0002.jpg",
+    timestamp_seconds: 14,
+  };
+  const selected = selectBestSlideRepresentatives([blurry, clear]);
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].stage_name, "segment-0002.jpg");
+  assert.equal(selected[0].auto_collapsed_alternates[0].reason, "clearer_capture");
+
+  const animation = {
+    ...clear,
+    quality: { border_luma_deficit: 0, score: 9.5 },
+    signature: Buffer.concat([Buffer.alloc(700, 10), Buffer.alloc(96 * 54 - 700, 240)]),
+    stage_name: "segment-0003.jpg",
+    timestamp_seconds: 18,
+  };
+  assert.equal(selectBestSlideRepresentatives([clear, animation]).length, 2);
 });
 
 test("collapses only consecutive duplicate frames and preserves a later slide recurrence", async (context) => {
@@ -563,7 +662,10 @@ test("collapses only consecutive duplicate frames and preserves a later slide re
       videoPath: video,
     });
     assert.equal(result.candidates.length, 3);
-    assert.deepEqual(result.candidates.map((candidate) => Math.floor(candidate.timestamp_seconds)), [2, 4, 6]);
+    assert.deepEqual(
+      result.candidates.map((candidate) => Math.floor(candidate.timestamp_seconds / 3)),
+      [0, 1, 2],
+    );
 
     await assert.rejects(
       () => extractSlideCandidates({
@@ -676,4 +778,19 @@ test("keeps a full-frame slide instead of cropping to an internal slide-shaped b
   } finally {
     await fs.rm(root, { force: true, recursive: true });
   }
+});
+
+test("keeps a full-frame slide when an internal box supplies only three detected edges", () => {
+  const width = 1920;
+  const height = 1080;
+  const pixels = Buffer.alloc(width * height * 3, 255);
+  for (let y = 164; y < 1056; y += 1) {
+    for (let x = 334; x < width; x += 1) {
+      const offset = (y * width + x) * 3;
+      pixels[offset] = 32;
+      pixels[offset + 1] = 32;
+      pixels[offset + 2] = 32;
+    }
+  }
+  assert.equal(detectSlideBounds(pixels, width, height), null);
 });

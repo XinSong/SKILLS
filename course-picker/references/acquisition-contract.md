@@ -26,7 +26,10 @@ job has a deterministic directory based on the video ID and Vault path. It
 contains `job-state.json` and phase outputs.
 
 Run the same `prepare.mjs` command to resume. Completed metadata, captions,
-video, transcript chunks, and slide candidates are reused after validation.
+video, transcript chunks, sequential slide analysis, representative renders,
+and final slide candidates are reused after validation. Slide recovery uses
+internal checkpoints inside the same default pipeline; it is not a separate
+user-facing repair mode.
 An active PID lock prevents concurrent mutation of the same job; a stale lock
 is replaced safely.
 
@@ -41,7 +44,8 @@ On failure or interruption:
 
 By default, successful publication retains the verified source video, metadata,
 transcript, and completed job state in the external cache. Disposable audio,
-contact sheets, candidates, review JSON, and transcript chunks are removed.
+slide analysis/render checkpoints, contact sheets, candidates, review JSON,
+and transcript chunks are removed.
 The Vault never becomes a video archive.
 
 Use `--discard-source` only when the user explicitly wants the complete external

@@ -244,16 +244,24 @@ YouTube → 完整下载本次所需证据 → 校验并封存本地快照
 - 默认先完整下载不超过 1080p 的视频，并用 ffprobe 和 SHA-256 校验。即使已有
   字幕且不采集课件，原始视频仍会保留在 Vault 外部任务目录。
 - 没有字幕时，从本地视频提取音频，再使用可选的 MLX Whisper 生成 VTT。
-- 采集课件时，离线结合场景变化与周期采样执行 slide 页面边界裁切、连续近重复
-  去重、OCR 和逐候选视觉复核。页面在课程后段再次出现时不会被全局去重误删。
+- 采集课件时只走一条默认流水线：单个 FFmpeg 进程以 2 fps 顺序输出
+  `160×90` 低分辨率帧，在内存中识别稳定视觉状态，并在每个状态内按清晰度、
+  稳定度和边框干扰选择代表时间点；随后才以有限并发抽取代表帧的高清图，执行
+  保守裁边和 OCR，最后生成 contact sheet 供逐候选视觉复核。页面在课程后段
+  再次出现时不会被全局去重误删。
+- `slide-analysis.json` 与 `slide-stage.json` 是同一流水线的内部检查点。网络或本地
+  处理被中断后，重复原命令会从已验证阶段继续，不需要也不存在另一套“图片修复”
+  模式。成功发布后会删除这些派生检查点。
 - 页面裁切使用矩形边缘与常见课件宽高比，只在高置信度时移除浏览器栏、播放器
   背景、演讲者区域和四周黑边；候选矩形必须至少覆盖原帧 55% 并具有至少三条
   独立检测到的页面边缘，避免把幻灯片内部的标题框、图表或示意图误当成整页。
   低置信度时保留候选原帧，交由复核门禁拒绝，不会盲目切掉课件内容。
-- 同一课程位置出现同一页面和动画状态的多个候选时，必须逐张查看原图并只保留
-  最清晰、最完整的一张。原生数字课件画面优先于拍屏、投影或摄像机裁剪画面；
-  不得因为某一帧时间更早就优先选择它。课程后段在不同讲述位置重新出现的页面
-  仍会保留。
+- 每个候选都是一个稳定视觉状态的优选代表，而不是固定时间间隔截图。流水线会
+  在强证据表明两段只是同一页面的不同采集质量时保留更清晰的一帧；复核仍需逐张
+  查看最终原图。原生数字课件画面优先于拍屏、投影或摄像机裁剪画面，不得因为
+  时间更早就优先选择它。增加信息的动画状态和课程后段的真实重现仍会保留。
+  被自动折叠的低质量副本会以 `auto_collapsed_alternates` 留在候选索引中，并在
+  发布前保留对应的 `slide-stage` 原图，便于审计而不增加最终 review 分区。
 - `.part`、source 和 `job-state.json` 位于 Vault 外的缓存目录；中断后重复同一
   命令即可恢复。
 - 逐候选复核结果写入缓存内的 `slide-review.json`。它必须明确包含或排除每个
@@ -383,7 +391,7 @@ node course-picker/scripts/verify-video-note.mjs \
   删除、付费、会员、年龄限制或地区限制内容。
 - 不恢复可编辑 `.pptx`，只保存从视频稳定帧中分离出的完整 slide 页面。
 - 没有字幕且未安装本地 ASR 时会失败，不会依据 description 或模型记忆补写。
-- 课件候选仍需 Codex 查看全部 contact sheet，并确认四条页面边缘完整且没有外部
+- 课件代表候选仍需 Codex 查看全部 contact sheet，并确认四条页面边缘完整且没有外部
   UI、黑边或内容截断。完整 PPT 章节页要保留；模糊、交叉淡化、半渲染的视频转场
   要排除。只有完整复核并分类所有候选后，零帧结果才有效。
 - 一小时视频能否在十分钟内完成取决于完整视频下载速度、是否采集 PPT 和是否需要
@@ -397,8 +405,8 @@ npm --prefix course-picker test
 
 测试覆盖 URL 规范化、五字段 metadata、VTT、离线准备与发布、失败恢复、远程
 图片拒绝、默认视频保留与显式删除、知识导向文风、课程与帧顺序、完整 review
-分区、漏帧/重复帧拒绝、非静默安全上限、真实 FFmpeg 候选、slide 页面边界裁切
-和 contact sheet 生成。
+分区、漏帧/重复帧拒绝、非静默安全上限、单次顺序扫描、稳定状态聚类、内部阶段
+恢复、清晰代表帧选择、真实 FFmpeg 候选、slide 页面边界裁切和 contact sheet 生成。
 
 ### 许可证
 
@@ -665,9 +673,17 @@ YouTube → download all evidence required by this route → seal local snapshot
   with ffprobe and SHA-256, even when captions already exist and slides were not
   requested.
 - A captionless video extracts audio from the local video for optional MLX Whisper.
-- Slide collection combines scene changes with periodic sampling,
-  slide-page boundary cropping, consecutive-near-duplicate removal, OCR, and
-  candidate-by-candidate visual review. A slide that recurs later is preserved.
+- Slide collection has one default pipeline. One FFmpeg process emits a
+  sequential 2 fps, `160×90` analysis stream; the collector identifies stable
+  visual states in memory and ranks timestamps within each state by sharpness,
+  stability, and border interference. It then extracts only the representative
+  high-resolution frames with bounded concurrency, performs conservative
+  slide-page cropping and OCR, and builds contact sheets for candidate-by-candidate
+  review. A slide that recurs later is preserved.
+- `slide-analysis.json` and `slide-stage.json` are internal checkpoints in that
+  same pipeline. Rerunning an interrupted command resumes verified stages; it
+  does not switch to a separate image-repair workflow. Successful publication
+  removes these derived checkpoints.
 - Cropping combines rectangular edges with common slide aspect ratios. It
   removes browser chrome, player backgrounds, presenter regions, and black
   borders only at high confidence. A crop must cover at least 55% of the source
@@ -675,11 +691,16 @@ YouTube → download all evidence required by this route → seal local snapshot
   title box, chart, or diagram cannot masquerade as the whole page.
   Low-confidence candidates remain uncropped and must be rejected during review
   rather than risking lost slide content.
-- When one course position contains several candidates for the same page and
-  animation state, review their full-resolution images and retain only the
-  clearest complete representative. Prefer a native digital slide feed over a
-  filmed screen, projection, or camera crop; never prefer a frame merely because
-  it appears first. Preserve a genuine recurrence at a later teaching position.
+- Each candidate is the selected representative of a stable visual state, not a
+  fixed-interval screenshot. When strong evidence shows that two nearby states
+  differ only in capture quality, the pipeline retains the clearer frame.
+  Full-resolution review remains mandatory. Prefer a native digital slide feed
+  over a filmed screen, projection, or camera crop; never prefer a frame merely
+  because it appears first. Information-adding animation states and genuine
+  recurrences at later teaching positions remain preserved.
+  Automatically collapsed low-fidelity captures remain listed under
+  `auto_collapsed_alternates`, with their `slide-stage` images retained until
+  publication for audit without expanding the final review partition.
 - `.part` downloads, source files, and `job-state.json` live in an external
   cache. Rerunning the same command resumes interrupted work.
 - Review results partition every candidate in cache-local `slide-review.json`.
@@ -839,8 +860,9 @@ Tests cover URL normalization, five-field metadata, VTT parsing, offline
 preparation and publication, recovery after failure, remote-image rejection,
 default video retention and explicit deletion, knowledge-first style,
 chronological course and slide order, complete review partitioning,
-missing/duplicate slide rejection, a non-silent safety ceiling, real FFmpeg
-candidates, slide-page boundary cropping, and contact sheets.
+missing/duplicate slide rejection, a non-silent safety ceiling, one sequential
+scan, stable-state grouping, internal-stage recovery, clearer representative
+selection, real FFmpeg candidates, slide-page boundary cropping, and contact sheets.
 
 ### License
 

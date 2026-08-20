@@ -65,14 +65,16 @@ Use the JSON output from `prepare.mjs`:
 3. Do not invent a speaker identity, terminology, numbers, or missing claims.
 4. For long videos, build an internal outline from all chunks before writing.
 
-When slides are requested, inspect every image in
-`contact_sheets_directory` and read `slide_candidates_index` for the cell-to-file
-mapping and crop metadata. Inspect individual candidates whenever a sheet is
-ambiguous. When multiple candidates show the same page and stable animation
-state in one continuous course position, inspect them at full resolution and
-keep only the clearest complete representative. Prefer a native digital slide
-feed over a filmed screen, projection, or camera crop; never let the earliest
-timestamp decide image quality. Classify every candidate in the returned
+When slides are requested, preparation uses one sequential low-resolution scan
+to find stable page states, ranks frames inside each state, and performs
+high-resolution extraction, conservative cropping, and OCR only for the chosen
+representatives. This is the single default pipeline, not a separate repair
+route. Inspect every image in `contact_sheets_directory` and read
+`slide_candidates_index` for the cell-to-file mapping, stable-segment interval,
+quality, crop, and OCR evidence. Inspect individual candidates whenever a sheet
+is ambiguous. Prefer a native digital slide feed over a filmed screen,
+projection, or camera crop; never let the earliest timestamp decide image
+quality. Classify every representative candidate in the returned
 `slide_review_path` using the exact schema in the slide-review contract. Include
 every complete PPT page, complete section-divider page, and stable animation
 state that adds information; exclude half-rendered video transitions and

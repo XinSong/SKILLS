@@ -5,16 +5,25 @@ frames.
 
 ## Review procedure
 
-1. Read `slide-candidates.json`; each `contact_sheet_map` entry lists cells in
-   left-to-right, top-to-bottom order.
-   Each candidate also records `crop`: `applied: true` means the extraction
+1. Read `slide-candidates.json`; its candidates are chronological
+   representatives of stable visual states, not arbitrary fixed-interval
+   screenshots. Each `contact_sheet_map` entry lists cells in left-to-right,
+   top-to-bottom order. Each candidate records its stable-segment interval,
+   quality evidence, OCR, and `crop`: `applied: true` means the extraction
    pipeline detected and cropped an axis-aligned slide page; `applied: false`
    means it conservatively retained the full candidate.
 2. Inspect every contact sheet in chronological order.
-3. Group visually equivalent candidates that show the same page and the same
-   stable animation state within one continuous course position. Inspect every
-   member of each group at full resolution; contact-sheet thumbnails are not a
-   sufficient quality comparison.
+   `auto_collapsed_alternates` records nearby lower-fidelity captures that were
+   removed only when OCR overlap and capture-quality evidence were both strong.
+   Their `stage_name` files remain under `<job-directory>/slide-stage/` until
+   publication for audit. They are not review candidates, but inspect them when
+   the representative appears incomplete or the recorded decision is doubtful;
+   stop instead of publishing if an alternate contains a distinct
+   information-adding state.
+3. Group visually equivalent representatives that show the same page and the
+   same stable animation state within one continuous course position. Inspect
+   every member of each group at full resolution; contact-sheet thumbnails are
+   not a sufficient quality comparison.
 4. Keep exactly one representative from each such group: the clearest complete
    frame. Prefer, in order, a native digital slide feed; a clean, complete page
    crop; and only then a filmed screen or projection. Compare text sharpness,
@@ -22,7 +31,7 @@ frames.
    obstructions, and missing page edges. Never choose by earliest timestamp.
 5. Confirm that all four slide-page edges are intact and that no content is cut
    off. A crop decision is evidence, not permission to skip visual review.
-6. Classify every candidate exactly once in `slide-review.json`. Exclude the
+6. Classify every representative candidate exactly once in `slide-review.json`. Exclude the
    lower-quality members of an equivalent group as `redundant_state`.
 7. Include every complete independent PPT page and every stable incremental
    animation state that adds information. Preserve a page when it reappears
