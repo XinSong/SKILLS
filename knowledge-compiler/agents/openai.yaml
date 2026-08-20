@@ -1,0 +1,4 @@
+interface:
+  display_name: "Knowledge Compiler"
+  short_description: "Compile local notes into traceable concept knowledge"
+  default_prompt: "Use $knowledge-compiler to compile these local Markdown notes into a traceable concept knowledge base."

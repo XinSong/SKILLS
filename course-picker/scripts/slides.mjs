@@ -9,9 +9,11 @@ import {
   writeJsonAtomic,
 } from "./video-core.mjs";
 
-const SLIDE_EXTRACTION_VERSION = 3;
+const SLIDE_EXTRACTION_VERSION = 4;
 const SLIDE_ASPECT_RATIOS = [4 / 3, 3 / 2, 16 / 10, 16 / 9];
 const MAX_DETECTION_WIDTH = 960;
+const MIN_CROP_AREA_RATIO = 0.55;
+const MIN_DETECTED_CROP_EDGES = 3;
 const PERIODIC_SAMPLE_SECONDS = 4;
 const SCENE_THRESHOLD = 0.08;
 const SIGNATURE_WIDTH = 96;
@@ -175,11 +177,20 @@ export function detectSlideBounds(pixels, width, height) {
           const cropHeight = bottom.position - top.position;
           if (cropHeight < height * 0.35) continue;
           const areaRatio = (cropWidth * cropHeight) / (width * height);
-          if (areaRatio < 0.25 || areaRatio > 0.985) continue;
+          // A small internal title box, chart, or diagram can have a standard
+          // slide aspect ratio and stronger edges than the page itself. Treat
+          // such rectangles as content, not as permission to crop the page.
+          // Conservative full-frame retention is recoverable during review;
+          // an over-crop irreversibly removes slide evidence.
+          if (areaRatio < MIN_CROP_AREA_RATIO || areaRatio > 0.985) continue;
           const error = aspectError(cropWidth, cropHeight);
           if (error > 0.055) continue;
           const nonFrame = [left, right, top, bottom].filter((edge) => !edge.frame);
-          if (nonFrame.length < 2) continue;
+          // Two source-frame edges plus two strong internal edges can form a
+          // plausible 16:9 rectangle even though no page boundary exists.
+          // Require three independently detected page edges before removing
+          // any source pixels.
+          if (nonFrame.length < MIN_DETECTED_CROP_EDGES) continue;
           const edgeStrength = nonFrame.reduce((sum, edge) => sum + edge.strength, 0) / nonFrame.length;
           const aspectStrength = 1 - error / 0.055;
           const confidence = 0.55 * edgeStrength + 0.35 * aspectStrength + 0.1 * areaRatio;
@@ -244,7 +255,7 @@ async function detectCandidateCrop(imagePath, ffmpegPath, ffprobePath) {
   if (!detected) {
     return {
       applied: false,
-      method: "edge-aspect-v1",
+      method: "edge-aspect-v2",
       source_height: source.height,
       source_width: source.width,
     };
@@ -259,7 +270,8 @@ async function detectCandidateCrop(imagePath, ffmpegPath, ffprobePath) {
     applied: true,
     confidence: detected.confidence,
     height: bottom - top,
-    method: "edge-aspect-v1",
+    area_ratio: Number((((right - left) * (bottom - top)) / (source.width * source.height)).toFixed(4)),
+    method: "edge-aspect-v2",
     source_height: source.height,
     source_width: source.width,
     width: right - left,
@@ -405,9 +417,13 @@ function hammingDistance(left, right) {
 async function readOcr(imagePath, tesseractPath) {
   if (!tesseractPath) return { confident_text: "", line_count: 0, word_count: 0 };
   try {
+    // Some native Tesseract/Leptonica builds do not resolve the macOS /tmp
+    // symlink correctly. A canonical path also makes OCR evidence independent
+    // of how the job directory was reached.
+    const readablePath = await fs.realpath(imagePath).catch(() => imagePath);
     const result = await runCommand(
       tesseractPath,
-      [imagePath, "stdout", "--psm", "11", "tsv"],
+      [readablePath, "stdout", "--psm", "11", "tsv"],
       { maxOutputBytes: 8 * 1024 * 1024 },
     );
     const words = [];

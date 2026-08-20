@@ -1,12 +1,12 @@
-# youtube-knowledge-picker 技术方案
+# course-picker 技术方案
 
 > 状态：已按评审结论实现首版  
 > 目标版本：第一个可用版本  
-> 最后更新：2026-08-10
+> 最后更新：2026-08-20
 
 ## 1. 结论
 
-新建独立 Skill：`youtube-knowledge-picker`，不把视频采集直接并入现有
+新建独立 Skill：`course-picker`，不把视频采集直接并入现有
 `knowledge-picker`。
 
 它只负责一个清晰工作流：把单个公开 YouTube 视频转换为可审阅、可追溯的
@@ -28,7 +28,7 @@ Obsidian 课堂笔记；当用户明确要求采集 PPT、slides 或课件帧时
 
 `knowledge-picker` 与本 Skill 的基本对象不同：
 
-| 维度 | `knowledge-picker` | `youtube-knowledge-picker` |
+| 维度 | `knowledge-picker` | `course-picker` |
 | --- | --- | --- |
 | 原始证据 | DOM、正文文本、文章图片 | 视频 metadata、带时间戳字幕、视频帧 |
 | 默认产物 | 尽可能忠实的原文 | 基于证据的课堂笔记 |
@@ -110,7 +110,7 @@ Skill description 应以输入和动作驱动，保持简短：
 
 ```yaml
 ---
-name: youtube-knowledge-picker
+name: course-picker
 description: Collect one public YouTube course into chronological, timestamped Obsidian learning notes, retain a verified source video outside the Vault by default, and preserve every reviewed PPT page locally when slides are explicitly requested. Use for a YouTube watch URL with a request to collect, archive, save as knowledge, or create course notes. Do not use for generic video Q&A, standalone video downloads, concept reorganization, or verbatim subtitle translation.
 ---
 ```
@@ -132,7 +132,7 @@ description: Collect one public YouTube course into chronological, timestamped O
 - 要求下载视频或绕过访问控制。
 - 要求逐字翻译字幕。
 
-用户显式调用 `$youtube-knowledge-picker` 时，单个有效 YouTube URL 足以启动
+用户显式调用 `$course-picker` 时，单个有效 YouTube URL 足以启动
 默认课堂笔记流程，不再追加无必要的确认问题。
 
 ## 6. 输出契约
@@ -320,14 +320,20 @@ type EvidenceCard = {
 2. 避开切换瞬间，在变化后选择稳定候选帧。
 3. 使用 dHash、RGB 视觉签名只去除连续近重复；A→B→A 中第二个 A 必须保留。
 4. 用 Tesseract OCR 为候选提供文本证据，但不依赖单一 OCR 分数自动发布。
-5. 生成 contact sheets；Codex 按时间顺序逐一分类所有候选，并将完整分区写入
+5. 自动裁剪只接受覆盖原帧至少 55%、且至少有三条独立检测页面边缘的候选矩形，
+   避免把原生全屏课件内部的标题框、图表或示意图误裁成整页；不确定时保留完整
+   原帧供复核。
+6. 生成 contact sheets；Codex 按时间顺序逐一分类所有候选，并将完整分区写入
    缓存内的 `slide-review.json`。
-6. 保留完整 PPT 内容页、完整章节过渡页，以及增加实质信息的稳定动画状态。
-7. 排除纯人物镜头、片头片尾、广告、播放器 UI，以及模糊、交叉淡化、半渲染的
+7. 同一课程位置的同一页面和稳定动画状态只保留最清晰、最完整的代表帧；必须查看
+   原尺寸候选，优先原生数字课件画面，其次是干净完整的裁剪页，最后才是拍屏或投影。
+   课程后段在不同讲述位置真正复现的页面仍然保留。
+8. 保留完整 PPT 内容页、完整章节过渡页，以及增加实质信息的稳定动画状态。
+9. 排除纯人物镜头、片头片尾、广告、播放器 UI，以及模糊、交叉淡化、半渲染的
    视频转场。
-8. 高置信度时只裁出完整 slide 页面；任何边缘或内容不完整的候选由复核门禁排除。
-9. 将所有 included 帧按原始时间排序，以时间戳命名，并在正文相应位置各嵌入一次。
-10. 候选数量超过安全上限时硬失败，不静默抽样。
+10. 高置信度时只裁出完整 slide 页面；任何边缘或内容不完整的候选由复核门禁排除。
+11. 将所有 included 帧按原始时间排序，以时间戳命名，并在正文相应位置各嵌入一次。
+12. 候选数量超过安全上限时硬失败，不静默抽样。
 
 每个最终帧使用以下内部结构：
 
@@ -555,7 +561,7 @@ frontmatter、链接、图片嵌入和文件命名由确定性 renderer 生成�
 首版实际使用以下结构：
 
 ```text
-youtube-knowledge-picker/
+course-picker/
 ├── SKILL.md
 ├── agents/
 │   └── openai.yaml
@@ -574,7 +580,7 @@ youtube-knowledge-picker/
     └── slide-review-contract.md
 
 tests/
-└── youtube-knowledge-picker.test.mjs
+└── course-picker.test.mjs
 ```
 
 职责边界：
@@ -652,6 +658,8 @@ Live test 不放入默认 CI，避免网络和上游变化导致不稳定；发�
 - 帧按时间排序，名称含时间戳，全部存于本视频资产目录。
 - 所有完整 PPT 页面、完整章节过渡页和有新增信息的动画状态都被 included；
   included 帧在相应课程位置各嵌入一次。
+- 原生全屏课件中的内部矩形不会被误裁为整页；同页同状态存在直出与拍屏候选时，
+  只保留更清晰的原生直出帧。
 - talking-head、模糊/半渲染视频转场和连续重复页不会被大量误收；课程后段复现页保留。
 - 检测完成但没有可信课件时，笔记成功且 handoff 报告 0 帧。
 - 课件 backend 无法执行时，整体不冒充成功。

@@ -445,7 +445,7 @@ if (path.resolve(process.argv[1] || "") === SCRIPT_PATH) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {
     usage();
-    console.error(`youtube-knowledge-picker prepare failed: ${error.message}`);
+    console.error(`course-picker prepare failed: ${error.message}`);
     process.exitCode = 1;
   }
 }

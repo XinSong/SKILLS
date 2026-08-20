@@ -82,16 +82,16 @@ export function parseYouTubeUrl(rawUrl) {
 }
 
 export function defaultCacheDirectory() {
-  if (process.env.YOUTUBE_KNOWLEDGE_PICKER_CACHE) {
-    return path.resolve(process.env.YOUTUBE_KNOWLEDGE_PICKER_CACHE);
+  if (process.env.COURSE_PICKER_CACHE) {
+    return path.resolve(process.env.COURSE_PICKER_CACHE);
   }
   if (process.env.XDG_CACHE_HOME) {
-    return path.join(process.env.XDG_CACHE_HOME, "youtube-knowledge-picker");
+    return path.join(process.env.XDG_CACHE_HOME, "course-picker");
   }
   if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Caches", "youtube-knowledge-picker");
+    return path.join(os.homedir(), "Library", "Caches", "course-picker");
   }
-  return path.join(os.homedir(), ".cache", "youtube-knowledge-picker");
+  return path.join(os.homedir(), ".cache", "course-picker");
 }
 
 export function formatLocalDateTime(date = new Date()) {

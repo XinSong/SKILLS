@@ -228,7 +228,7 @@ export async function publish({ bodyPath, jobDirectory }) {
     }
 
     const token = `${Date.now()}-${randomBytes(4).toString("hex")}`;
-    vaultStaging = path.join(vaultDirectory, `.youtube-knowledge-picker.staging-${token}`);
+    vaultStaging = path.join(vaultDirectory, `.course-picker.staging-${token}`);
     const stagedAssetDirectory = path.join(vaultStaging, "Knowledge Assets", `yt-${videoId}`);
     const stagedNotePath = path.join(vaultStaging, path.basename(notePath));
     await fs.mkdir(stagedAssetDirectory, { recursive: true, mode: 0o700 });
@@ -345,7 +345,7 @@ if (path.resolve(process.argv[1] || "") === SCRIPT_PATH) {
   try {
     console.log(JSON.stringify(await publish(parseArgs(process.argv.slice(2))), null, 2));
   } catch (error) {
-    console.error(`youtube-knowledge-picker publish failed: ${error.message}`);
+    console.error(`course-picker publish failed: ${error.message}`);
     process.exitCode = 1;
   }
 }

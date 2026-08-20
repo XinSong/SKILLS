@@ -1,9 +1,9 @@
 ---
-name: youtube-knowledge-picker
+name: course-picker
 description: Collect one public YouTube course into chronological, timestamped Obsidian learning notes, retain a verified source video outside the Vault by default, and preserve every reviewed PPT page locally when slides are explicitly requested. Use for a YouTube watch URL with a request to collect, archive, save as knowledge, or create course notes. Do not use for generic video Q&A, playlists, Shorts, standalone video downloads, concept reorganization, or verbatim subtitle translation.
 ---
 
-# YouTube Knowledge Picker
+# Course Picker
 
 Use one of two routes:
 
@@ -68,11 +68,16 @@ Use the JSON output from `prepare.mjs`:
 When slides are requested, inspect every image in
 `contact_sheets_directory` and read `slide_candidates_index` for the cell-to-file
 mapping and crop metadata. Inspect individual candidates whenever a sheet is
-ambiguous. Classify every candidate in the returned `slide_review_path` using
-the exact schema in the slide-review contract. Include every complete PPT page,
-complete section-divider page, and stable animation state that adds information;
-exclude half-rendered video transitions and non-slide frames. A zero-slide result
-is valid only after every candidate has been explicitly classified.
+ambiguous. When multiple candidates show the same page and stable animation
+state in one continuous course position, inspect them at full resolution and
+keep only the clearest complete representative. Prefer a native digital slide
+feed over a filmed screen, projection, or camera crop; never let the earliest
+timestamp decide image quality. Classify every candidate in the returned
+`slide_review_path` using the exact schema in the slide-review contract. Include
+every complete PPT page, complete section-divider page, and stable animation
+state that adds information; exclude half-rendered video transitions and
+non-slide frames. A zero-slide result is valid only after every candidate has
+been explicitly classified.
 
 ## 3. Write the body only
 

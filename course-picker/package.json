@@ -1,5 +1,5 @@
 {
-  "name": "@ivoid/youtube-knowledge-picker",
+  "name": "@ivoid/course-picker",
   "version": "1.0.0",
   "private": true,
   "license": "MIT",
@@ -11,6 +11,6 @@
     "prepare": "node scripts/prepare.mjs",
     "publish": "node scripts/publish.mjs",
     "verify": "node scripts/verify-video-note.mjs",
-    "test": "node --test ../tests/youtube-knowledge-picker.test.mjs"
+    "test": "node --test ../tests/course-picker.test.mjs"
   }
 }

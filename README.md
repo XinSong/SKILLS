@@ -14,7 +14,7 @@ personal knowledge base.
 | Skill | 用途 |
 | --- | --- |
 | `knowledge-picker` | 采集网页原文，或将已有 Markdown 忠实翻译为中文 |
-| `youtube-knowledge-picker` | 将 YouTube 课程转为带时间戳的课堂笔记，并按需保存 PPT 帧 |
+| `course-picker` | 将 YouTube 课程转为带时间戳的课堂笔记，并按需保存 PPT 帧 |
 
 ### knowledge-picker
 
@@ -220,9 +220,9 @@ npm --prefix knowledge-picker test
 [`site-adapters.md`](knowledge-picker/references/site-adapters.md)，输出格式见
 [`output-contract.md`](knowledge-picker/references/output-contract.md)。
 
-### youtube-knowledge-picker
+### course-picker
 
-`youtube-knowledge-picker` 将单个公开 YouTube 课程转换为可复核的 Obsidian
+`course-picker` 将单个公开 YouTube 课程转换为可复核的 Obsidian
 学习笔记。笔记忠实遵循课程讲述顺序，简洁记录知识本身；默认保存原语言字幕。
 完整原始视频默认保留在 Vault 外部缓存；只有用户明确要求 PPT、slides 或课件帧时，
 才会额外审查视频帧并将课件图片发布到 Vault。
@@ -247,8 +247,13 @@ YouTube → 完整下载本次所需证据 → 校验并封存本地快照
 - 采集课件时，离线结合场景变化与周期采样执行 slide 页面边界裁切、连续近重复
   去重、OCR 和逐候选视觉复核。页面在课程后段再次出现时不会被全局去重误删。
 - 页面裁切使用矩形边缘与常见课件宽高比，只在高置信度时移除浏览器栏、播放器
-  背景、演讲者区域和四周黑边；低置信度时保留候选原帧，交由复核门禁拒绝，
-  不会盲目切掉课件内容。
+  背景、演讲者区域和四周黑边；候选矩形必须至少覆盖原帧 55% 并具有至少三条
+  独立检测到的页面边缘，避免把幻灯片内部的标题框、图表或示意图误当成整页。
+  低置信度时保留候选原帧，交由复核门禁拒绝，不会盲目切掉课件内容。
+- 同一课程位置出现同一页面和动画状态的多个候选时，必须逐张查看原图并只保留
+  最清晰、最完整的一张。原生数字课件画面优先于拍屏、投影或摄像机裁剪画面；
+  不得因为某一帧时间更早就优先选择它。课程后段在不同讲述位置重新出现的页面
+  仍会保留。
 - `.part`、source 和 `job-state.json` 位于 Vault 外的缓存目录；中断后重复同一
   命令即可恢复。
 - 逐候选复核结果写入缓存内的 `slide-review.json`。它必须明确包含或排除每个
@@ -307,24 +312,24 @@ python3 -m pip install mlx-whisper
 
 ```bash
 mkdir -p "$HOME/.codex/skills"
-cp -R ./youtube-knowledge-picker "$HOME/.codex/skills/"
+cp -R ./course-picker "$HOME/.codex/skills/"
 ```
 
-重启 Codex 后即可调用 `$youtube-knowledge-picker`。
+重启 Codex 后即可调用 `$course-picker`。
 
 #### 在 Codex 中使用
 
 生成默认课堂笔记：
 
 ```text
-使用 $youtube-knowledge-picker 将这个 YouTube 课程保存为 Obsidian 课堂笔记：
+使用 $course-picker 将这个 YouTube 课程保存为 Obsidian 课堂笔记：
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
 同时采集 PPT 帧：
 
 ```text
-使用 $youtube-knowledge-picker 保存这个 YouTube 课程，并采集视频中的 PPT 帧：
+使用 $course-picker 保存这个 YouTube 课程，并采集视频中的 PPT 帧：
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
@@ -333,7 +338,7 @@ https://www.youtube.com/watch?v=VIDEO_ID
 准备字幕证据：
 
 ```bash
-node youtube-knowledge-picker/scripts/prepare.mjs \
+node course-picker/scripts/prepare.mjs \
   "https://www.youtube.com/watch?v=VIDEO_ID" \
   --vault "/absolute/path/to/Obsidian Vault"
 ```
@@ -341,7 +346,7 @@ node youtube-knowledge-picker/scripts/prepare.mjs \
 上述默认保存完整视频。若明确不希望保留：
 
 ```bash
-node youtube-knowledge-picker/scripts/prepare.mjs \
+node course-picker/scripts/prepare.mjs \
   "https://www.youtube.com/watch?v=VIDEO_ID" \
   --vault "/absolute/path/to/Obsidian Vault" \
   --discard-source
@@ -350,7 +355,7 @@ node youtube-knowledge-picker/scripts/prepare.mjs \
 准备字幕和课件候选帧：
 
 ```bash
-node youtube-knowledge-picker/scripts/prepare.mjs \
+node course-picker/scripts/prepare.mjs \
   "https://www.youtube.com/watch?v=VIDEO_ID" \
   --vault "/absolute/path/to/Obsidian Vault" \
   --slides
@@ -360,7 +365,7 @@ Codex 根据任务目录内的 transcript chunks 按课程顺序撰写 `note-bod
 模式还必须逐一复核候选帧，按 Skill 契约写入缓存内的 `slide-review.json`，再发布：
 
 ```bash
-node youtube-knowledge-picker/scripts/publish.mjs \
+node course-picker/scripts/publish.mjs \
   --job "/absolute/path/to/job" \
   --body "/absolute/path/to/job/note-body.md"
 ```
@@ -368,7 +373,7 @@ node youtube-knowledge-picker/scripts/publish.mjs \
 验证已发布笔记：
 
 ```bash
-node youtube-knowledge-picker/scripts/verify-video-note.mjs \
+node course-picker/scripts/verify-video-note.mjs \
   "/absolute/path/to/Obsidian Vault/Video title.md"
 ```
 
@@ -387,7 +392,7 @@ node youtube-knowledge-picker/scripts/verify-video-note.mjs \
 #### 开发与测试
 
 ```bash
-npm --prefix youtube-knowledge-picker test
+npm --prefix course-picker test
 ```
 
 测试覆盖 URL 规范化、五字段 metadata、VTT、离线准备与发布、失败恢复、远程
@@ -408,7 +413,7 @@ This repository currently contains two independent Skills:
 | Skill | Purpose |
 | --- | --- |
 | `knowledge-picker` | Collect original web articles or faithfully translate existing Markdown into Chinese |
-| `youtube-knowledge-picker` | Turn YouTube courses into timestamped notes with optional local slide frames |
+| `course-picker` | Turn YouTube courses into timestamped notes with optional local slide frames |
 
 ### knowledge-picker
 
@@ -633,9 +638,9 @@ adapter rules and
 [`output-contract.md`](knowledge-picker/references/output-contract.md) for the
 output contract.
 
-### youtube-knowledge-picker
+### course-picker
 
-`youtube-knowledge-picker` turns one public YouTube course into reviewable
+`course-picker` turns one public YouTube course into reviewable
 Obsidian learning notes. Notes stay faithful to the teaching sequence, state
 the knowledge concisely, preserve the original-language transcript, and add
 source timestamps. It downloads and publishes slide frames only when PPT or
@@ -665,8 +670,16 @@ YouTube → download all evidence required by this route → seal local snapshot
   candidate-by-candidate visual review. A slide that recurs later is preserved.
 - Cropping combines rectangular edges with common slide aspect ratios. It
   removes browser chrome, player backgrounds, presenter regions, and black
-  borders only at high confidence. Low-confidence candidates remain uncropped
-  and must be rejected during review rather than risking lost slide content.
+  borders only at high confidence. A crop must cover at least 55% of the source
+  frame and have at least three independently detected page edges so an internal
+  title box, chart, or diagram cannot masquerade as the whole page.
+  Low-confidence candidates remain uncropped and must be rejected during review
+  rather than risking lost slide content.
+- When one course position contains several candidates for the same page and
+  animation state, review their full-resolution images and retain only the
+  clearest complete representative. Prefer a native digital slide feed over a
+  filmed screen, projection, or camera crop; never prefer a frame merely because
+  it appears first. Preserve a genuine recurrence at a later teaching position.
 - `.part` downloads, source files, and `job-state.json` live in an external
   cache. Rerunning the same command resumes interrupted work.
 - Review results partition every candidate in cache-local `slide-review.json`.
@@ -730,17 +743,17 @@ python3 -m pip install mlx-whisper
 
 ```bash
 mkdir -p "$HOME/.codex/skills"
-cp -R ./youtube-knowledge-picker "$HOME/.codex/skills/"
+cp -R ./course-picker "$HOME/.codex/skills/"
 ```
 
-Restart Codex so it can discover `$youtube-knowledge-picker`.
+Restart Codex so it can discover `$course-picker`.
 
 #### Use in Codex
 
 Create default classroom notes:
 
 ```text
-Use $youtube-knowledge-picker to save this YouTube course as timestamped
+Use $course-picker to save this YouTube course as timestamped
 classroom notes in my Obsidian Vault:
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
@@ -748,7 +761,7 @@ https://www.youtube.com/watch?v=VIDEO_ID
 Also collect PPT frames:
 
 ```text
-Use $youtube-knowledge-picker to save this YouTube course and collect its PPT
+Use $course-picker to save this YouTube course and collect its PPT
 frames locally:
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
@@ -758,7 +771,7 @@ https://www.youtube.com/watch?v=VIDEO_ID
 Prepare transcript evidence:
 
 ```bash
-node youtube-knowledge-picker/scripts/prepare.mjs \
+node course-picker/scripts/prepare.mjs \
   "https://www.youtube.com/watch?v=VIDEO_ID" \
   --vault "/absolute/path/to/Obsidian Vault"
 ```
@@ -766,7 +779,7 @@ node youtube-knowledge-picker/scripts/prepare.mjs \
 The command above retains the complete video by default. To opt out explicitly:
 
 ```bash
-node youtube-knowledge-picker/scripts/prepare.mjs \
+node course-picker/scripts/prepare.mjs \
   "https://www.youtube.com/watch?v=VIDEO_ID" \
   --vault "/absolute/path/to/Obsidian Vault" \
   --discard-source
@@ -775,7 +788,7 @@ node youtube-knowledge-picker/scripts/prepare.mjs \
 Prepare transcript and slide candidates:
 
 ```bash
-node youtube-knowledge-picker/scripts/prepare.mjs \
+node course-picker/scripts/prepare.mjs \
   "https://www.youtube.com/watch?v=VIDEO_ID" \
   --vault "/absolute/path/to/Obsidian Vault" \
   --slides
@@ -786,7 +799,7 @@ must review every slide candidate and write cache-local `slide-review.json`
 according to the Skill contract before publishing:
 
 ```bash
-node youtube-knowledge-picker/scripts/publish.mjs \
+node course-picker/scripts/publish.mjs \
   --job "/absolute/path/to/job" \
   --body "/absolute/path/to/job/note-body.md"
 ```
@@ -794,7 +807,7 @@ node youtube-knowledge-picker/scripts/publish.mjs \
 Verify a published note:
 
 ```bash
-node youtube-knowledge-picker/scripts/verify-video-note.mjs \
+node course-picker/scripts/verify-video-note.mjs \
   "/absolute/path/to/Obsidian Vault/Video title.md"
 ```
 
@@ -819,7 +832,7 @@ node youtube-knowledge-picker/scripts/verify-video-note.mjs \
 #### Development and tests
 
 ```bash
-npm --prefix youtube-knowledge-picker test
+npm --prefix course-picker test
 ```
 
 Tests cover URL normalization, five-field metadata, VTT parsing, offline

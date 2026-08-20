@@ -11,16 +11,26 @@ frames.
    pipeline detected and cropped an axis-aligned slide page; `applied: false`
    means it conservatively retained the full candidate.
 2. Inspect every contact sheet in chronological order.
-3. Inspect individual candidates when the sheet is too small or ambiguous.
-4. Confirm that all four slide-page edges are intact and that no content is cut
+3. Group visually equivalent candidates that show the same page and the same
+   stable animation state within one continuous course position. Inspect every
+   member of each group at full resolution; contact-sheet thumbnails are not a
+   sufficient quality comparison.
+4. Keep exactly one representative from each such group: the clearest complete
+   frame. Prefer, in order, a native digital slide feed; a clean, complete page
+   crop; and only then a filmed screen or projection. Compare text sharpness,
+   resolution, color fidelity, perspective distortion, moire, glare, borders,
+   obstructions, and missing page edges. Never choose by earliest timestamp.
+5. Confirm that all four slide-page edges are intact and that no content is cut
    off. A crop decision is evidence, not permission to skip visual review.
-5. Classify every candidate exactly once in `slide-review.json`.
-6. Include every complete independent PPT page and every stable incremental
+6. Classify every candidate exactly once in `slide-review.json`. Exclude the
+   lower-quality members of an equivalent group as `redundant_state`.
+7. Include every complete independent PPT page and every stable incremental
    animation state that adds information. Preserve a page when it reappears
-   later in a different course position.
-7. Reference an included candidate by its unchanged filename under
+   later in a distinct course position; a camera cut within the same continuous
+   explanation is not a distinct recurrence.
+8. Reference an included candidate by its unchanged filename under
    `Knowledge Assets/yt-<video-id>/slides/`.
-8. Place every included image exactly once at its chronological position in the
+9. Place every included image exactly once at its chronological position in the
    note. Never move the complete image set into an end-of-note archive.
 
 ## Review file
@@ -60,6 +70,8 @@ temporary job evidence and is never published to the Vault.
   note beyond a timestamped, content-specific image alt;
 - a stable frame containing only the complete slide page, or a frame in which
   the slide already fills the entire image;
+- the sharpest, highest-fidelity representative when the same page and stable
+  state appears more than once at one continuous course position;
 - every stable animation state that adds meaningful information;
 - a complete slide that reappears later, because its later position is part of
   the course sequence;
@@ -75,6 +87,8 @@ temporary job evidence and is never published to the Vault.
 - crops missing any slide edge or cutting off text, diagrams, citations, page
   numbers, or other slide content;
 - crossfade, blur, fade, half-rendered, or obstructed video-transition frames;
+- a filmed screen, projection, camera crop, or other degraded duplicate when a
+  cleaner native digital frame of the same page and stable state is available;
 - immediately repeated copies of the same stable state and animation states
   that add no information;
 - thumbnails or arbitrary fixed-interval screenshots;

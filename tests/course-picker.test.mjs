@@ -3,9 +3,9 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { publish, validateSlideReview } from "../youtube-knowledge-picker/scripts/publish.mjs";
-import { parseArgs, prepare } from "../youtube-knowledge-picker/scripts/prepare.mjs";
-import { extractSlideCandidates } from "../youtube-knowledge-picker/scripts/slides.mjs";
+import { publish, validateSlideReview } from "../course-picker/scripts/publish.mjs";
+import { parseArgs, prepare } from "../course-picker/scripts/prepare.mjs";
+import { extractSlideCandidates } from "../course-picker/scripts/slides.mjs";
 import {
   buildFrontmatter,
   optionalCommand,
@@ -13,8 +13,8 @@ import {
   parseVtt,
   parseYouTubeUrl,
   runCommand,
-} from "../youtube-knowledge-picker/scripts/video-core.mjs";
-import { verifyVideoNote } from "../youtube-knowledge-picker/scripts/verify-video-note.mjs";
+} from "../course-picker/scripts/video-core.mjs";
+import { verifyVideoNote } from "../course-picker/scripts/verify-video-note.mjs";
 
 const VIDEO_ID = "BaW_jenozKc";
 const CANONICAL_URL = `https://www.youtube.com/watch?v=${VIDEO_ID}`;
@@ -73,7 +73,7 @@ process.stdout.write(JSON.stringify({
 }
 
 async function withWorkspace(run) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "youtube-knowledge-picker-test-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-picker-test-"));
   const vault = path.join(root, "Vault");
   const cache = path.join(root, "Cache");
   const bin = path.join(root, "bin");
@@ -140,7 +140,7 @@ async function makePreparedSlideJob({ root, vault }) {
     path.join(jobDirectory, "slide-candidates.json"),
     `${JSON.stringify({
       candidates: names.map((name, index) => ({ name, timestamp_seconds: index ? 8 : 2 })),
-      extraction_version: 3,
+      extraction_version: 4,
       source_sha256: "fixture-source",
     }, null, 2)}\n`,
   );
@@ -507,7 +507,7 @@ test("extracts scene-based local candidates and contact sheets with ffmpeg", asy
     });
     assert.ok(result.candidates.length >= 1);
     assert.ok(result.contact_sheets.length >= 1);
-    assert.equal(result.extraction_version, 3);
+    assert.equal(result.extraction_version, 4);
     for (const candidate of result.candidates) {
       assert.match(candidate.name, /^\d{3}-\d{2}h\d{2}m\d{2}s\.jpg$/);
       assert.equal(candidate.crop.applied, false);
@@ -625,6 +625,54 @@ test("crops browser chrome and black borders to the complete slide page", async 
     const size = await probeImageSize(path.join(root, "slide-candidates", candidate.name), ffprobe);
     assert.equal(size.width, candidate.crop.width);
     assert.equal(size.height, candidate.crop.height);
+  } finally {
+    await fs.rm(root, { force: true, recursive: true });
+  }
+});
+
+test("keeps a full-frame slide instead of cropping to an internal slide-shaped box", async (context) => {
+  const ffmpeg = await optionalCommand("ffmpeg");
+  const ffprobe = await optionalCommand("ffprobe");
+  if (!ffmpeg || !ffprobe) {
+    context.skip("ffmpeg or ffprobe is not installed");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-slide-full-frame-test-"));
+  try {
+    const video = path.join(root, "source.mp4");
+    await runCommand(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=white:s=1920x1080:d=3:r=10",
+      "-vf",
+      "drawbox=x=410:y=230:w=1100:h=620:color=#202020:t=8," +
+        "drawbox=x=500:y=360:w=260:h=180:color=#7aa6d8:t=fill," +
+        "drawbox=x=830:y=360:w=260:h=180:color=#9bcf8b:t=fill," +
+        "drawbox=x=1160:y=360:w=260:h=180:color=#e5a0a0:t=fill",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      video,
+    ]);
+    const result = await extractSlideCandidates({
+      duration: 3,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-full-frame-slide",
+      videoPath: video,
+    });
+    assert.equal(result.candidates.length, 1);
+    const candidate = result.candidates[0];
+    assert.equal(candidate.crop.applied, false);
+    assert.equal(candidate.crop.method, "edge-aspect-v2");
+    const size = await probeImageSize(path.join(root, "slide-candidates", candidate.name), ffprobe);
+    assert.deepEqual(size, { height: 1080, width: 1920 });
   } finally {
     await fs.rm(root, { force: true, recursive: true });
   }
