@@ -9,6 +9,7 @@
   },
   "scripts": {
     "prepare": "node scripts/prepare.mjs",
+    "review": "node scripts/note-quality.mjs",
     "publish": "node scripts/publish.mjs",
     "verify": "node scripts/verify-video-note.mjs",
     "test": "node --test ../tests/course-picker.test.mjs"

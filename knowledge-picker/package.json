@@ -9,6 +9,7 @@
   },
   "scripts": {
     "collect": "node scripts/collect.mjs",
+    "translate": "node scripts/translation-job.mjs",
     "verify": "node scripts/verify-note.mjs",
     "verify:translation": "node scripts/verify-translation.mjs",
     "test": "node --test ../tests/*.test.mjs"

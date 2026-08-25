@@ -27,7 +27,9 @@ Use one of two routes:
   fields and validate the final note.
 
 Read [references/classroom-note-contract.md](references/classroom-note-contract.md)
-before writing the note. Read
+and [references/note-quality-contract.md](references/note-quality-contract.md)
+before processing transcript evidence. For Chinese notes, also read
+[references/chinese-style-guide.md](references/chinese-style-guide.md). Read
 [references/slide-review-contract.md](references/slide-review-contract.md) only
 when slides were explicitly requested. Read
 [references/acquisition-contract.md](references/acquisition-contract.md) when
@@ -55,15 +57,22 @@ Preparation completes all required downloads before knowledge processing. The
 same command resumes an interrupted job. On failure, report the job directory
 and exact error; never replace missing evidence with model knowledge.
 
-## 2. Read all evidence
+## 2. Build the evidence ledger
 
 Use the JSON output from `prepare.mjs`:
 
-1. Read every path in `evidence_chunks` in chronological order.
-2. Extract definitions, arguments, evidence, examples, procedures, caveats,
-   and conclusions in their original teaching order with timestamps.
-3. Do not invent a speaker identity, terminology, numbers, or missing claims.
-4. For long videos, build an internal outline from all chunks before writing.
+1. Read every path in `evidence_chunks` in chronological order. Treat lines
+   marked `[context]` as overlap from the prior chunk and do not count them
+   twice.
+2. Complete `knowledge-units.json` with atomic, timestamped definitions,
+   claims, reasoning, examples, procedures, caveats, results, and material
+   attributions.
+3. Complete `coverage-ledger.json`. Resolve every chunk as included,
+   low-value transition, duplicate, uncertain, or non-course content. Never use
+   a low-value label merely to shorten the note.
+4. Complete `course-outline.json` from all knowledge units in the original
+   teaching order. Do not regroup by concept or importance.
+5. Do not invent a speaker identity, terminology, numbers, or missing claims.
 
 When slides are requested, preparation uses one sequential low-resolution scan
 to find stable page states, ranks frames inside each state, and performs
@@ -81,7 +90,7 @@ state that adds information; exclude half-rendered video transitions and
 non-slide frames. A zero-slide result is valid only after every candidate has
 been explicitly classified.
 
-## 3. Write the body only
+## 3. Draft and edit the body
 
 Create the returned `note_body_path` using the classroom-note contract.
 
@@ -96,8 +105,33 @@ Create the returned `note_body_path` using the classroom-note contract.
   transition pages.
 - End with one original-video link and exactly one local transcript link using
   the paths described by the contract.
+- Draft from the chronological outline, then verify claims against their
+  transcript spans. Run a separate full-document editing pass for terminology,
+  cohesion, concision, and removal of medium narration. Do not delete an
+  important knowledge unit during editing.
 
-## 4. Publish and verify
+## 4. Review the final body
+
+After `note-body.md` is stable, generate its source- and body-hash-bound review:
+
+```bash
+node scripts/note-quality.mjs review --job "<job-directory>"
+```
+
+Compare every knowledge unit with the final note. Resolve each review entry,
+record any unsupported claim or terminology issue, fix the note, and regenerate
+the review after every body edit. Publication requires all high- and
+medium-importance units, no unsupported claims, no unresolved terminology, and
+scores of at least 4/5 for fidelity, coverage, coherence, conciseness, and
+terminology.
+
+Verify the completed review:
+
+```bash
+node scripts/note-quality.mjs verify --job "<job-directory>"
+```
+
+## 5. Publish and verify
 
 ```bash
 node scripts/publish.mjs \
@@ -105,8 +139,9 @@ node scripts/publish.mjs \
   --body "<job-directory>/note-body.md"
 ```
 
-`publish.mjs` stages assets, renders metadata, validates chronological structure,
-review completeness, timestamps, local files, and knowledge-first style,
+`publish.mjs` first reruns the evidence, coverage, outline, and final-body
+quality gates. It then stages assets, renders metadata, validates chronological
+structure, review completeness, timestamps, local files, and knowledge-first style,
 publishes assets first and the note last, then independently verifies the final
 output. Failed or interrupted work remains resumable. Successful jobs retain
 the verified source video outside the Vault unless `--discard-source` was used.

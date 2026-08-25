@@ -12,6 +12,32 @@ function extractCodeBlocks(markdown) {
   }));
 }
 
+function extractInlineCode(markdown) {
+  return stripCodeBlocks(markdown)
+    .match(/(?<!`)`[^`\n]+`(?!`)/g) || [];
+}
+
+function extractMath(markdown) {
+  const withoutCode = stripCodeBlocks(markdown);
+  return [
+    ...(withoutCode.match(/\$\$[\s\S]*?\$\$/g) || []),
+    ...(withoutCode.match(/(?<!\$)\$(?!\$)[^\n$]+\$(?!\$)/g) || []),
+  ];
+}
+
+function extractRawUrls(markdown) {
+  return stripCodeBlocks(markdown).match(/https?:\/\/[^\s<>)\]]+/g) || [];
+}
+
+function extractNumberTokens(markdown) {
+  const withoutProtected = stripCodeBlocks(markdown)
+    .replace(/https?:\/\/[^\s<>)\]]+/g, "")
+    .replace(/(?<!`)`[^`\n]+`(?!`)/g, "")
+    .replace(/\$\$[\s\S]*?\$\$/g, "")
+    .replace(/(?<!\$)\$(?!\$)[^\n$]+\$(?!\$)/g, "");
+  return withoutProtected.match(/(?<![\p{L}\p{N}_])[-+]?\d+(?:[.,]\d+)*(?:%|‰)?(?![\p{L}\p{N}_])/gu) || [];
+}
+
 function extractImageDestinations(markdown) {
   return [
     ...markdown.matchAll(
@@ -28,7 +54,7 @@ function extractLinkDestinations(markdown) {
   ].map((match) => match[1] || match[2]);
 }
 
-function classifyBlocks(markdown) {
+export function markdownBlocks(markdown) {
   const withoutFrontmatter = markdown.replace(/^---\n[\s\S]*?\n---\n?/, "");
   const rawBlocks = withoutFrontmatter
     .trim()
@@ -36,20 +62,27 @@ function classifyBlocks(markdown) {
     .map((block) => block.trim())
     .filter(Boolean);
 
-  return rawBlocks.map((block) => {
-    if (block.startsWith("```")) return "CODE";
-    const heading = block.match(/^(#{1,6})\s+/);
-    if (heading) return `H${heading[1].length}`;
-    if (/^!\[[^\]]*\]\(/.test(block)) return "IMAGE";
-    if (/^>\s?/.test(block)) return "QUOTE";
-    if (/^(?:[-+*]|\d+\.)\s+/.test(block)) return "LIST";
-    if (/^\|.*\|$/m.test(block)) return "TABLE";
-    if (/^---$/.test(block)) return "RULE";
-    return "PARAGRAPH";
+  return rawBlocks.map((block, index) => {
+    let type = "PARAGRAPH";
+    if (block.startsWith("```")) type = "CODE";
+    else {
+      const heading = block.match(/^(#{1,6})\s+/);
+      if (heading) type = `H${heading[1].length}`;
+      else if (/^!\[[^\]]*\]\(/.test(block)) type = "IMAGE";
+      else if (/^>\s?/.test(block)) type = "QUOTE";
+      else if (/^(?:[-+*]|\d+\.)\s+/.test(block)) type = "LIST";
+      else if (/^\|.*\|$/m.test(block)) type = "TABLE";
+      else if (/^---$/.test(block)) type = "RULE";
+    }
+    return { id: `u${String(index + 1).padStart(4, "0")}`, raw: block, type };
   });
 }
 
-function plainText(markdown) {
+function classifyBlocks(markdown) {
+  return markdownBlocks(markdown).map((block) => block.type);
+}
+
+export function plainText(markdown) {
   return stripCodeBlocks(markdown)
     .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
@@ -65,7 +98,7 @@ function arraysEqual(left, right) {
   );
 }
 
-function splitKnowledgeNote(markdown, label) {
+export function splitKnowledgeNote(markdown, label) {
   const match = markdown.match(/^---\n([\s\S]*?)\n---\n/);
   if (!match) {
     throw new Error(`${label} is missing YAML front matter`);
@@ -92,6 +125,45 @@ function splitKnowledgeNote(markdown, label) {
     body: markdown.slice(match[0].length),
     frontMatter: match[0],
   };
+}
+
+function sorted(values) {
+  return [...values].sort((left, right) => left.localeCompare(right));
+}
+
+function assertSameMultiset(original, translated, label) {
+  if (!arraysEqual(sorted(original), sorted(translated))) {
+    throw new Error(`${label} changed during translation`);
+  }
+}
+
+function assertPerBlockCoverage(originalBody, translatedBody) {
+  const originalBlocks = markdownBlocks(originalBody);
+  const translatedBlocks = markdownBlocks(translatedBody);
+  for (let index = 0; index < originalBlocks.length; index += 1) {
+    const source = originalBlocks[index];
+    const target = translatedBlocks[index];
+    if (!target || source.type !== target.type || source.type === "CODE" || source.type === "RULE") continue;
+    const sourcePlain = plainText(source.raw);
+    const targetPlain = plainText(target.raw);
+    if (!sourcePlain) continue;
+    const ratio = targetPlain.length / Math.max(1, sourcePlain.length);
+    if (ratio < 0.12 || ratio > 4.0) {
+      throw new Error(
+        `Translation unit ${source.id} has implausible length ratio ${ratio.toFixed(3)}; possible local omission or expansion`,
+      );
+    }
+    const sourceLooksNonChinese =
+      (sourcePlain.match(/[A-Za-z]/g) || []).length >= Math.max(8, sourcePlain.length * 0.25);
+    const targetHan = (targetPlain.match(/\p{Script=Han}/gu) || []).length;
+    if (
+      sourceLooksNonChinese
+      && targetPlain !== sourcePlain
+      && targetHan < Math.min(4, Math.max(1, Math.floor(sourcePlain.length / 20)))
+    ) {
+      throw new Error(`Translation unit ${source.id} contains too little Chinese text`);
+    }
+  }
 }
 
 export async function verifyChineseTranslation(
@@ -124,6 +196,24 @@ export async function verifyChineseTranslation(
     throw new Error("Code fences or code contents changed during translation");
   }
 
+  if (!arraysEqual(extractInlineCode(originalNote.body), extractInlineCode(translatedNote.body))) {
+    throw new Error("Inline code or inline-code order changed during translation");
+  }
+
+  if (!arraysEqual(extractMath(originalNote.body), extractMath(translatedNote.body))) {
+    throw new Error("Math expressions or math-expression order changed during translation");
+  }
+
+  if (!arraysEqual(extractRawUrls(originalNote.body), extractRawUrls(translatedNote.body))) {
+    throw new Error("Raw URLs or raw-URL order changed during translation");
+  }
+
+  assertSameMultiset(
+    extractNumberTokens(originalNote.body),
+    extractNumberTokens(translatedNote.body),
+    "Numeric values",
+  );
+
   const originalImages = extractImageDestinations(originalNote.body);
   const translatedImages = extractImageDestinations(translatedNote.body);
   if (!arraysEqual(originalImages, translatedImages)) {
@@ -143,6 +233,7 @@ export async function verifyChineseTranslation(
       `Markdown block structure changed during translation.\nOriginal: ${originalStructure.join(",")}\nTranslation: ${translatedStructure.join(",")}`,
     );
   }
+  assertPerBlockCoverage(originalNote.body, translatedNote.body);
 
   const originalPlain = plainText(originalNote.body);
   const translatedPlain = plainText(translatedNote.body);
@@ -166,9 +257,14 @@ export async function verifyChineseTranslation(
       "separate-output",
       "metadata-preserved",
       "code-preserved",
+      "inline-code-preserved",
+      "math-preserved",
+      "raw-urls-preserved",
+      "numeric-values-preserved",
       "images-preserved",
       "links-preserved",
       "block-structure-preserved",
+      "per-block-coverage-plausible",
       "length-ratio-plausible",
       "contains-chinese",
     ],

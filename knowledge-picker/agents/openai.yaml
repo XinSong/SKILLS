@@ -1,4 +1,4 @@
 interface:
   display_name: "Knowledge Picker"
-  short_description: "Collect articles or translate Markdown for Obsidian"
-  default_prompt: "Use $knowledge-picker for the provided URL or Markdown note, following my request to collect or translate."
+  short_description: "Collect articles and produce reviewed Chinese translations"
+  default_prompt: "Use $knowledge-picker to collect this article or faithfully translate this Markdown through the staged review workflow."

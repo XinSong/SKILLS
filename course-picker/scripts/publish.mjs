@@ -17,6 +17,7 @@ import {
   writeJsonAtomic,
 } from "./video-core.mjs";
 import { verifyVideoNote } from "./verify-video-note.mjs";
+import { verifyNoteQualityJob } from "./note-quality.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
@@ -226,6 +227,7 @@ export async function publish({ bodyPath, jobDirectory }) {
     if (!state.requested_slides && slideLinks.length) {
       throw new Error("Slides were not requested for this job");
     }
+    const qualityVerification = await verifyNoteQualityJob(jobDirectory, bodyPath);
 
     const token = `${Date.now()}-${randomBytes(4).toString("hex")}`;
     vaultStaging = path.join(vaultDirectory, `.course-picker.staging-${token}`);
@@ -289,6 +291,7 @@ export async function publish({ bodyPath, jobDirectory }) {
       status: "published",
       transcript_path: path.join(assetDirectory, transcriptName),
       verification,
+      quality_verification: qualityVerification,
     };
     if (!state.keep_source) {
       await releaseJobLock(lockPath);
@@ -305,6 +308,10 @@ export async function publish({ bodyPath, jobDirectory }) {
       "slide-stage.json",
       "slide-review.json",
       "evidence-index.json",
+      "knowledge-units.json",
+      "course-outline.json",
+      "coverage-ledger.json",
+      "note-review.json",
       "note-body.md",
     ]) {
       await fs.rm(path.join(jobDirectory, disposable), { force: true, recursive: true });

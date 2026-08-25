@@ -11,9 +11,9 @@ import {
   writeJsonAtomic,
 } from "./video-core.mjs";
 
-const SLIDE_EXTRACTION_VERSION = 7;
+const SLIDE_EXTRACTION_VERSION = 8;
 const SLIDE_ANALYSIS_VERSION = 1;
-const SLIDE_RENDER_VERSION = 2;
+const SLIDE_RENDER_VERSION = 3;
 const SLIDE_ASPECT_RATIOS = [4 / 3, 3 / 2, 16 / 10, 16 / 9];
 const MAX_DETECTION_WIDTH = 960;
 const MIN_CROP_AREA_RATIO = 0.55;
@@ -469,18 +469,32 @@ export function detectSlideBounds(pixels, width, height) {
   };
 }
 
-function evenFloor(value) {
-  return Math.max(0, Math.floor(value / 2) * 2);
+function projectDetectedBounds(detected, source, detection) {
+  const scaleX = source.width / detection.width;
+  const scaleY = source.height / detection.height;
+  const left = Math.max(0, Math.min(source.width - 1, Math.round(detected.x * scaleX)));
+  const top = Math.max(0, Math.min(source.height - 1, Math.round(detected.y * scaleY)));
+  const right = Math.max(left + 1, Math.min(
+    source.width,
+    Math.round((detected.x + detected.width) * scaleX),
+  ));
+  const bottom = Math.max(top + 1, Math.min(
+    source.height,
+    Math.round((detected.y + detected.height) * scaleY),
+  ));
+  return { height: bottom - top, width: right - left, x: left, y: top };
 }
 
-function evenCeil(value, maximum) {
-  return Math.min(maximum, Math.ceil(value / 2) * 2);
+function nearbyBounds(left, right, tolerance) {
+  return (
+    Math.abs(left.x - right.x) <= tolerance
+    && Math.abs(left.y - right.y) <= tolerance
+    && Math.abs((left.x + left.width) - (right.x + right.width)) <= tolerance
+    && Math.abs((left.y + left.height) - (right.y + right.height)) <= tolerance
+  );
 }
 
-async function detectCandidateCrop(imagePath, ffmpegPath, ffprobePath) {
-  const source = await imageSize(imagePath, ffprobePath);
-  const detectionWidth = Math.min(MAX_DETECTION_WIDTH, source.width);
-  const detectionHeight = Math.max(2, Math.round((source.height * detectionWidth) / source.width / 2) * 2);
+async function readRgbImage(imagePath, width, height, ffmpegPath) {
   const result = await runCommand(
     ffmpegPath,
     [
@@ -493,51 +507,88 @@ async function detectCandidateCrop(imagePath, ffmpegPath, ffprobePath) {
       "-frames:v",
       "1",
       "-vf",
-      `scale=${detectionWidth}:${detectionHeight},format=rgb24`,
+      width && height ? `scale=${width}:${height},format=rgb24` : "format=rgb24",
       "-f",
       "rawvideo",
       "pipe:1",
     ],
     { binary: true, maxOutputBytes: 32 * 1024 * 1024 },
   );
-  const detected = detectSlideBounds(result.stdout, detectionWidth, detectionHeight);
+  return result.stdout;
+}
+
+async function detectCandidateCrop(imagePath, ffmpegPath, ffprobePath) {
+  const source = await imageSize(imagePath, ffprobePath);
+  const detectionWidth = Math.min(MAX_DETECTION_WIDTH, source.width);
+  const detectionHeight = Math.max(2, Math.round((source.height * detectionWidth) / source.width / 2) * 2);
+  const detectionPixels = await readRgbImage(
+    imagePath,
+    detectionWidth,
+    detectionHeight,
+    ffmpegPath,
+  );
+  const detected = detectSlideBounds(detectionPixels, detectionWidth, detectionHeight);
   if (!detected) {
     return {
       bounds: { height: detectionHeight, width: detectionWidth, x: 0, y: 0 },
       crop: {
         applied: false,
-        method: "edge-aspect-v2",
+        method: "edge-aspect-v3",
         source_height: source.height,
         source_width: source.width,
       },
       height: detectionHeight,
-      pixels: result.stdout,
+      pixels: detectionPixels,
       width: detectionWidth,
     };
   }
-  const scaleX = source.width / detectionWidth;
-  const scaleY = source.height / detectionHeight;
-  const left = evenFloor(detected.x * scaleX);
-  const top = evenFloor(detected.y * scaleY);
-  const right = evenCeil((detected.x + detected.width) * scaleX, source.width);
-  const bottom = evenCeil((detected.y + detected.height) * scaleY, source.height);
+  const coarseCrop = projectDetectedBounds(
+    detected,
+    source,
+    { height: detectionHeight, width: detectionWidth },
+  );
+  let selectedBounds = detected;
+  let selectedCrop = coarseCrop;
+  let selectedHeight = detectionHeight;
+  let selectedPixels = detectionPixels;
+  let selectedWidth = detectionWidth;
+  if (detectionWidth < source.width || detectionHeight < source.height) {
+    const fullPixels = await readRgbImage(imagePath, null, null, ffmpegPath);
+    const refined = detectSlideBounds(fullPixels, source.width, source.height);
+    const tolerance = Math.max(
+      8,
+      Math.ceil(4 * Math.max(source.width / detectionWidth, source.height / detectionHeight)),
+    );
+    if (refined && nearbyBounds(coarseCrop, refined, tolerance)) {
+      selectedBounds = refined;
+      selectedCrop = {
+        height: refined.height,
+        width: refined.width,
+        x: refined.x,
+        y: refined.y,
+      };
+      selectedHeight = source.height;
+      selectedPixels = fullPixels;
+      selectedWidth = source.width;
+    }
+  }
   return {
-    bounds: detected,
+    bounds: selectedBounds,
     crop: {
       applied: true,
-      confidence: detected.confidence,
-      height: bottom - top,
-      area_ratio: Number((((right - left) * (bottom - top)) / (source.width * source.height)).toFixed(4)),
-      method: "edge-aspect-v2",
+      confidence: selectedBounds.confidence,
+      height: selectedCrop.height,
+      area_ratio: Number(((selectedCrop.width * selectedCrop.height) / (source.width * source.height)).toFixed(4)),
+      method: "edge-aspect-v3",
       source_height: source.height,
       source_width: source.width,
-      width: right - left,
-      x: left,
-      y: top,
+      width: selectedCrop.width,
+      x: selectedCrop.x,
+      y: selectedCrop.y,
     },
-    height: detectionHeight,
-    pixels: result.stdout,
-    width: detectionWidth,
+    height: selectedHeight,
+    pixels: selectedPixels,
+    width: selectedWidth,
   };
 }
 
@@ -565,7 +616,7 @@ function normalizedVisualSignature(pixels, width, height, bounds) {
 async function extractFrame(videoPath, outputPath, time, ffmpegPath, ffprobePath) {
   const temporary = path.join(
     path.dirname(outputPath),
-    `.${path.basename(outputPath)}.full-${process.pid}.jpg`,
+    `.${path.basename(outputPath)}.full-${process.pid}.png`,
   );
   await runCommand(ffmpegPath, [
     "-hide_banner",
@@ -580,34 +631,27 @@ async function extractFrame(videoPath, outputPath, time, ffmpegPath, ffprobePath
     "1",
     "-vf",
     "scale='min(1920,iw)':-2",
-    "-q:v",
-    "2",
     "-y",
     temporary,
   ]);
   try {
     const detection = await detectCandidateCrop(temporary, ffmpegPath, ffprobePath);
     const crop = detection.crop;
-    if (crop.applied) {
-      await runCommand(ffmpegPath, [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-i",
-        temporary,
-        "-frames:v",
-        "1",
-        "-vf",
-        `crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}:exact=1`,
-        "-q:v",
-        "2",
-        "-y",
-        outputPath,
-      ]);
-    } else {
-      await fs.rename(temporary, outputPath);
-    }
+    await runCommand(ffmpegPath, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-nostdin",
+      "-i",
+      temporary,
+      "-frames:v",
+      "1",
+      ...(crop.applied ? ["-vf", `crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}:exact=1`] : []),
+      "-q:v",
+      "2",
+      "-y",
+      outputPath,
+    ]);
     sniffImage(await fs.readFile(outputPath));
     const signature = normalizedVisualSignature(
       detection.pixels,

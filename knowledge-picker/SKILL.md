@@ -73,23 +73,30 @@ request. The source note does not need to have been collected by this Skill,
 but it must pass `verify-note.mjs`.
 
 1. Read
-   [references/translation-contract.md](references/translation-contract.md).
+   [references/translation-contract.md](references/translation-contract.md) and
+   [references/chinese-style-guide.md](references/chinese-style-guide.md).
 2. Keep the source unchanged.
-3. Create `<source-stem>（中文翻译）.md` beside it.
-4. Copy the five-field frontmatter unchanged.
-5. Translate the body completely and faithfully. Preserve block order, links,
-   image paths, code, commands, identifiers, URLs, and formulas.
-6. Do not summarize, explain, shorten, expand, merge, reinterpret, or add
-   translator commentary.
-7. Verify:
+3. Prepare an external, source-bound translation job:
 
    ```bash
-   node scripts/verify-translation.mjs \
-     "<source-note.md>" \
-     "<source-stem>（中文翻译）.md"
+   node scripts/translation-job.mjs prepare "<source-note.md>"
    ```
 
-8. Treat validation failure as unfinished translation work.
+4. Complete the document brief and glossary before translating.
+5. Translate semantic sections into `translation-draft.md`, carrying the
+   document brief, glossary, and neighboring context into every section.
+6. Run a separate Chinese editing pass into `translation-final.md`. Copy the
+   five-field frontmatter unchanged; preserve block order, links, image paths,
+   code, commands, identifiers, URLs, formulas, numbers, meaning, certainty,
+   and tone.
+7. Generate and complete the source-unit alignment review. Fix every omission,
+   addition, changed modality, and terminology inconsistency. Regenerate the
+   review after any final-text change.
+8. Publish with `translation-job.mjs publish`; never write directly to the
+   sibling output path. The publisher creates
+   `<source-stem>（中文翻译）.md` only after deterministic and semantic gates pass.
+9. Do not summarize, explain, shorten, expand, merge, reinterpret, or add
+   translator commentary. Treat any validation failure as unfinished work.
 
 ## Collect, then translate
 

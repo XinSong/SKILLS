@@ -6,12 +6,18 @@ import test from "node:test";
 import { publish, validateSlideReview } from "../course-picker/scripts/publish.mjs";
 import { parseArgs, prepare } from "../course-picker/scripts/prepare.mjs";
 import {
+  createNoteReview,
+  segmentTranscriptCues,
+  verifyNoteQualityJob,
+} from "../course-picker/scripts/note-quality.mjs";
+import {
   detectSlideBounds,
   extractSlideCandidates,
   selectBestSlideRepresentatives,
 } from "../course-picker/scripts/slides.mjs";
 import {
   buildFrontmatter,
+  hashFile,
   optionalCommand,
   parseFrontmatter,
   parseVtt,
@@ -110,6 +116,37 @@ async function probeImageSize(imagePath, ffprobe) {
   return { height: Number(stream.height), width: Number(stream.width) };
 }
 
+async function imageBorderDarkRatios(imagePath, ffmpeg, ffprobe) {
+  const { height, width } = await probeImageSize(imagePath, ffprobe);
+  const result = await runCommand(ffmpeg, [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-i",
+    imagePath,
+    "-frames:v",
+    "1",
+    "-vf",
+    "format=rgb24",
+    "-f",
+    "rawvideo",
+    "pipe:1",
+  ], { binary: true, maxOutputBytes: 32 * 1024 * 1024 });
+  const pixels = result.stdout;
+  const isDark = (x, y) => {
+    const offset = (y * width + x) * 3;
+    const luma = 0.2126 * pixels[offset] + 0.7152 * pixels[offset + 1] + 0.0722 * pixels[offset + 2];
+    return luma < 50;
+  };
+  const ratio = (values) => values.filter(Boolean).length / values.length;
+  return {
+    bottom: ratio(Array.from({ length: width }, (_, x) => isDark(x, height - 1))),
+    left: ratio(Array.from({ length: height }, (_, y) => isDark(0, y))),
+    right: ratio(Array.from({ length: height }, (_, y) => isDark(width - 1, y))),
+    top: ratio(Array.from({ length: width }, (_, x) => isDark(x, 0))),
+  };
+}
+
 async function writePublishedFixture(vault, body, slideNames = []) {
   const assetDirectory = path.join(vault, "Knowledge Assets", `yt-${VIDEO_ID}`);
   await fs.mkdir(path.join(assetDirectory, "slides"), { recursive: true });
@@ -140,6 +177,16 @@ async function makePreparedSlideJob({ root, vault }) {
   }
   const transcriptPath = path.join(jobDirectory, "transcript.en.vtt");
   await fs.writeFile(transcriptPath, VTT, "utf8");
+  await fs.writeFile(
+    path.join(jobDirectory, "evidence-index.json"),
+    `${JSON.stringify({
+      canonical_url: CANONICAL_URL,
+      chunks: [{ context_start_seconds: 0, end_seconds: 10, name: "001.md", start_seconds: 0, token_estimate: 20 }],
+      cue_count: 2,
+      segmentation: { strategy: "semantic-overlap", version: 2, overlap_seconds: 45 },
+      video_id: VIDEO_ID,
+    }, null, 2)}\n`,
+  );
   await fs.writeFile(
     path.join(jobDirectory, "slide-candidates.json"),
     `${JSON.stringify({
@@ -182,6 +229,48 @@ async function makePreparedSlideJob({ root, vault }) {
     }, null, 2)}\n`,
   );
   return { jobDirectory, names, noteBodyPath };
+}
+
+async function completeQualityReview(jobDirectory, bodyPath) {
+  const state = JSON.parse(await fs.readFile(path.join(jobDirectory, "job-state.json"), "utf8"));
+  const evidence = JSON.parse(await fs.readFile(path.join(jobDirectory, "evidence-index.json"), "utf8"));
+  const transcriptSha256 = await hashFile(state.transcript_path);
+  const first = evidence.chunks[0];
+  const last = evidence.chunks.at(-1);
+  const unit = {
+    id: "k0001",
+    type: "claim",
+    content: "The course separates specification from verification and supports the distinction with an example.",
+    start_seconds: first.start_seconds,
+    end_seconds: last.end_seconds,
+    importance: "high",
+    certainty: "asserted",
+    chunk_names: evidence.chunks.map((chunk) => chunk.name),
+    slide_names: [],
+  };
+  await fs.writeFile(path.join(jobDirectory, "knowledge-units.json"), `${JSON.stringify({
+    schema_version: 1,
+    transcript_sha256: transcriptSha256,
+    units: [unit],
+  }, null, 2)}\n`);
+  await fs.writeFile(path.join(jobDirectory, "course-outline.json"), `${JSON.stringify({
+    schema_version: 1,
+    transcript_sha256: transcriptSha256,
+    ordered_unit_ids: [unit.id],
+    section_plan: [{ title: "Evidence", start_seconds: unit.start_seconds, end_seconds: unit.end_seconds, unit_ids: [unit.id] }],
+  }, null, 2)}\n`);
+  await fs.writeFile(path.join(jobDirectory, "coverage-ledger.json"), `${JSON.stringify({
+    schema_version: 1,
+    transcript_sha256: transcriptSha256,
+    chunks: evidence.chunks.map((chunk) => ({ name: chunk.name, status: "included", reason: "", unit_ids: [unit.id] })),
+  }, null, 2)}\n`);
+  await createNoteReview(jobDirectory);
+  const reviewPath = path.join(jobDirectory, "note-review.json");
+  const review = JSON.parse(await fs.readFile(reviewPath, "utf8"));
+  review.unit_reviews = review.unit_reviews.map((item) => ({ ...item, status: "included" }));
+  review.scores = { fidelity: 5, coverage: 5, coherence: 5, conciseness: 5, terminology: 5 };
+  await fs.writeFile(reviewPath, `${JSON.stringify(review, null, 2)}\n`);
+  return verifyNoteQualityJob(jobDirectory, bodyPath);
 }
 
 test("canonicalizes supported YouTube watch URLs and rejects broader inputs", () => {
@@ -246,6 +335,26 @@ test("parses valid VTT and rejects empty transcripts", () => {
   assert.equal(parseVtt(VTT).length, 2);
   assert.throws(() => parseVtt("WEBVTT\n\n"), /no usable/);
   assert.throws(() => parseVtt("not vtt"), /WEBVTT/);
+});
+
+test("segments transcript evidence at semantic boundaries with bounded overlap", () => {
+  const cues = [
+    { start: 0, end: 4, text: "The first concept starts here." },
+    { start: 4, end: 8, text: "It has a precise definition." },
+    { start: 8, end: 12, text: "Now the second concept begins." },
+    { start: 12, end: 16, text: "It includes a concrete example." },
+  ];
+  const segments = segmentTranscriptCues(cues, {
+    maxDuration: 12,
+    maxTokens: 15,
+    minTokens: 7,
+    overlapSeconds: 5,
+    targetTokens: 10,
+  });
+  assert.ok(segments.length >= 2);
+  assert.equal(segments[0].start_seconds, 0);
+  assert.ok(segments[1].context_start_seconds < segments[1].start_seconds);
+  assert.equal(segments[1].cues.some((cue) => cue.context_only), true);
 });
 
 test("requires a complete, source-bound slide review in candidate order", () => {
@@ -372,6 +481,7 @@ test("publishes exactly the reviewed slide sequence and rejects omissions or dup
         `![Evidence boundary, 00:02](<${relative[0]}>)\n\n` +
         `![Second section page, 00:08](<${relative[1]}>)\n\n${sourceBlock}`,
     );
+    await completeQualityReview(prepared.jobDirectory, prepared.noteBodyPath);
     const result = await publish({ bodyPath: prepared.noteBodyPath, jobDirectory: prepared.jobDirectory });
     assert.equal(result.slide_count, 2);
     assert.equal(result.verification.status, "passed");
@@ -408,6 +518,11 @@ The course defines an evidence-first process and demonstrates it with an example
 - [Original-language transcript](<Knowledge Assets/yt-${VIDEO_ID}/transcript.en.vtt>)
 `;
     await fs.writeFile(prepared.note_body_path, body, "utf8");
+    await assert.rejects(
+      () => verifyNoteQualityJob(prepared.job_directory, prepared.note_body_path),
+      /unresolved/,
+    );
+    await completeQualityReview(prepared.job_directory, prepared.note_body_path);
     const result = await publish({ bodyPath: prepared.note_body_path, jobDirectory: prepared.job_directory });
     assert.equal(result.status, "published");
     assert.equal(result.slide_count, 0);
@@ -440,6 +555,7 @@ test("explicit discard publishes successfully and removes the external job", asy
         `- [Transcript](<Knowledge Assets/yt-${VIDEO_ID}/transcript.en.vtt>)\n`,
       "utf8",
     );
+    await completeQualityReview(prepared.job_directory, prepared.note_body_path);
     const result = await publish({ bodyPath: prepared.note_body_path, jobDirectory: prepared.job_directory });
     assert.equal(result.retained_source, false);
     assert.equal(result.source_video_path, "");
@@ -511,7 +627,7 @@ test("extracts grouped candidates from one sequential scan and defers OCR to sta
     });
     assert.ok(result.candidates.length >= 1);
     assert.ok(result.contact_sheets.length >= 1);
-    assert.equal(result.extraction_version, 7);
+    assert.equal(result.extraction_version, 8);
     assert.equal(result.pipeline, "sequential-stable-state");
     assert.equal(result.work.sequential_scan_count, 1);
     assert.ok(result.scanned_frame_count > result.candidates.length);
@@ -682,7 +798,7 @@ test("collapses only consecutive duplicate frames and preserves a later slide re
   }
 });
 
-test("crops browser chrome and black borders to the complete slide page", async (context) => {
+test("crops odd-positioned browser chrome without retaining a one-pixel black border", async (context) => {
   const ffmpeg = await optionalCommand("ffmpeg");
   const ffprobe = await optionalCommand("ffprobe");
   if (!ffmpeg || !ffprobe) {
@@ -701,7 +817,7 @@ test("crops browser chrome and black borders to the complete slide page", async 
       "-i",
       "color=c=#1c1a14:s=1920x1080:d=3:r=10",
       "-vf",
-      "drawbox=x=78:y=88:w=1764:h=992:color=#fffce8:t=fill",
+      "drawbox=x=79:y=89:w=1762:h=991:color=#fffce8:t=fill",
       "-c:v",
       "libx264",
       "-pix_fmt",
@@ -720,13 +836,19 @@ test("crops browser chrome and black borders to the complete slide page", async 
     const candidate = result.candidates[0];
     assert.equal(candidate.crop.applied, true);
     assert.ok(candidate.crop.confidence >= 0.9);
-    assert.ok(Math.abs(candidate.crop.x - 78) <= 4);
-    assert.ok(Math.abs(candidate.crop.y - 88) <= 4);
-    assert.ok(Math.abs(candidate.crop.width - 1764) <= 4);
-    assert.ok(Math.abs(candidate.crop.height - 992) <= 4);
-    const size = await probeImageSize(path.join(root, "slide-candidates", candidate.name), ffprobe);
+    assert.ok(Math.abs(candidate.crop.x - 79) <= 1);
+    assert.ok(Math.abs(candidate.crop.y - 89) <= 1);
+    assert.ok(Math.abs(candidate.crop.width - 1762) <= 1);
+    assert.ok(Math.abs(candidate.crop.height - 991) <= 1);
+    assert.equal(candidate.crop.method, "edge-aspect-v3");
+    const candidatePath = path.join(root, "slide-candidates", candidate.name);
+    const size = await probeImageSize(candidatePath, ffprobe);
     assert.equal(size.width, candidate.crop.width);
     assert.equal(size.height, candidate.crop.height);
+    const borderDarkRatios = await imageBorderDarkRatios(candidatePath, ffmpeg, ffprobe);
+    for (const [edge, darkRatio] of Object.entries(borderDarkRatios)) {
+      assert.ok(darkRatio < 0.01, `${edge} retained a dark exterior border (${darkRatio})`);
+    }
   } finally {
     await fs.rm(root, { force: true, recursive: true });
   }
@@ -772,7 +894,7 @@ test("keeps a full-frame slide instead of cropping to an internal slide-shaped b
     assert.equal(result.candidates.length, 1);
     const candidate = result.candidates[0];
     assert.equal(candidate.crop.applied, false);
-    assert.equal(candidate.crop.method, "edge-aspect-v2");
+    assert.equal(candidate.crop.method, "edge-aspect-v3");
     const size = await probeImageSize(path.join(root, "slide-candidates", candidate.name), ffprobe);
     assert.deepEqual(size, { height: 1080, width: 1920 });
   } finally {

@@ -38,10 +38,15 @@ URL 时始终只保存原文；翻译必须由用户明确要求。用于独立�
 ├── URL
 │   └── 采集原文 → 校验 → 保存到 Vault
 ├── 本地 Markdown + 中文要求
-│   └── 忠实翻译 → 校验 → 保存同级中文副本
+│   └── 文档简报与术语表 → 分章节翻译 → 双语审校 → 中文编辑 → 保存同级副本
 └── URL + 中文要求
-    └── 采集原文 → 校验 → 翻译 → 再校验
+    └── 采集原文 → 校验 → 高质量翻译流水线 → 再校验
 ```
+
+翻译采用 Vault 外部任务目录，不直接写入最终文件。任务保存源区块索引、文档
+简报、术语表、初稿、终稿和逐区块对齐审校。发布器会把审校与原文、终稿哈希
+绑定；原文或终稿变化后必须重新审校。只有全部区块已处理、没有目标侧新增主张，
+且格式与受保护内容通过检查时，才会原子写入同级的 `（中文翻译）.md`。
 
 #### 成功输出
 
@@ -190,7 +195,28 @@ node knowledge-picker/scripts/verify-note.mjs \
   "/absolute/path/to/Obsidian Vault/Article title.md"
 ```
 
-验证中文翻译：
+直接启动分阶段翻译任务：
+
+```bash
+node knowledge-picker/scripts/translation-job.mjs prepare \
+  "/absolute/path/to/Obsidian Vault/Article title.md"
+```
+
+Codex 完成任务目录中的简报、术语表、初稿与终稿后，生成逐区块审校模板：
+
+```bash
+node knowledge-picker/scripts/translation-job.mjs review \
+  --job "/absolute/path/to/translation-job"
+```
+
+审校完成后发布；发布器会再次运行确定性校验：
+
+```bash
+node knowledge-picker/scripts/translation-job.mjs publish \
+  --job "/absolute/path/to/translation-job"
+```
+
+也可以单独验证已存在的中文翻译：
 
 ```bash
 node knowledge-picker/scripts/verify-translation.mjs \
@@ -204,7 +230,7 @@ node knowledge-picker/scripts/verify-translation.mjs \
 - 没有语义正文边界，或正文完全位于 iframe、Canvas、视频、音频或交互应用
   中的页面，可能需要专用适配器。
 - 同一个持久化 Profile 不能同时被两个浏览器进程使用。
-- CLI 只采集原文；中文翻译由 Codex 在原文通过校验后另行生成。
+- 采集 CLI 只采集原文；中文翻译由 Codex 在原文通过校验后执行多阶段翻译任务。
 
 #### 开发与测试
 
@@ -214,7 +240,8 @@ npm --prefix knowledge-picker test
 ```
 
 测试覆盖 X 专用适配、通用正文边界、metadata、视觉分隔线、图片与 SVG
-本地化、拒绝覆盖、失败诊断，以及拒绝用摘要冒充翻译。
+本地化、拒绝覆盖、失败诊断、语义任务发布门禁、数字/公式/行内代码保护，以及
+拒绝用摘要冒充翻译。
 
 站点适配规则见
 [`site-adapters.md`](knowledge-picker/references/site-adapters.md)，输出格式见
@@ -369,8 +396,22 @@ node course-picker/scripts/prepare.mjs \
   --slides
 ```
 
-Codex 根据任务目录内的 transcript chunks 按课程顺序撰写 `note-body.md`。课件
-模式还必须逐一复核候选帧，按 Skill 契约写入缓存内的 `slide-review.json`，再发布：
+Codex 先从语义边界与少量重叠的 transcript chunks 中生成
+`knowledge-units.json`，再补全 `course-outline.json` 和
+`coverage-ledger.json`，最后按课程顺序撰写并编辑 `note-body.md`。课件模式还必须
+逐一复核候选帧，按 Skill 契约写入缓存内的 `slide-review.json`。
+
+正文稳定后生成并完成与当前正文哈希绑定的审校：
+
+```bash
+node course-picker/scripts/note-quality.mjs review \
+  --job "/absolute/path/to/job"
+
+node course-picker/scripts/note-quality.mjs verify \
+  --job "/absolute/path/to/job"
+```
+
+质量门禁通过后再发布：
 
 ```bash
 node course-picker/scripts/publish.mjs \
@@ -406,7 +447,8 @@ npm --prefix course-picker test
 测试覆盖 URL 规范化、五字段 metadata、VTT、离线准备与发布、失败恢复、远程
 图片拒绝、默认视频保留与显式删除、知识导向文风、课程与帧顺序、完整 review
 分区、漏帧/重复帧拒绝、非静默安全上限、单次顺序扫描、稳定状态聚类、内部阶段
-恢复、清晰代表帧选择、真实 FFmpeg 候选、slide 页面边界裁切和 contact sheet 生成。
+恢复、清晰代表帧选择、真实 FFmpeg 候选、slide 页面边界裁切、语义重叠分段、
+知识覆盖账本、正文哈希审校门禁和 contact sheet 生成。
 
 ### 许可证
 
@@ -450,10 +492,18 @@ Input
 ├── URL
 │   └── Collect original → validate → publish to vault
 ├── Local Markdown + Chinese request
-│   └── Faithful translation → validate → publish sibling note
+│   └── Brief and glossary → section translation → bilingual review → Chinese edit → sibling note
 └── URL + Chinese request
-    └── Collect original → validate → translate → validate again
+    └── Collect original → validate → staged high-quality translation → validate again
 ```
+
+Translation runs in an external job directory instead of writing directly to
+the final note. The job retains a source-unit index, document brief, glossary,
+draft, final text, and unit-by-unit alignment review. The publisher binds the
+review to source and target hashes; any source or final-text change requires a
+new review. It atomically creates the sibling `（中文翻译）.md` only after every
+unit is resolved, target-only claims are absent, and protected content passes
+deterministic validation.
 
 #### Successful output
 
@@ -612,7 +662,29 @@ node knowledge-picker/scripts/verify-note.mjs \
   "/absolute/path/to/Obsidian Vault/Article title.md"
 ```
 
-Verify a Chinese translation:
+Start a staged translation job directly:
+
+```bash
+node knowledge-picker/scripts/translation-job.mjs prepare \
+  "/absolute/path/to/Obsidian Vault/Article title.md"
+```
+
+After Codex completes the brief, glossary, draft, and final text, create the
+unit-level review template:
+
+```bash
+node knowledge-picker/scripts/translation-job.mjs review \
+  --job "/absolute/path/to/translation-job"
+```
+
+Complete the review and publish through the deterministic gate:
+
+```bash
+node knowledge-picker/scripts/translation-job.mjs publish \
+  --job "/absolute/path/to/translation-job"
+```
+
+You can also validate an existing Chinese translation independently:
 
 ```bash
 node knowledge-picker/scripts/verify-translation.mjs \
@@ -627,8 +699,8 @@ node knowledge-picker/scripts/verify-translation.mjs \
 - Pages without a semantic article boundary, or whose content lives entirely
   in an iframe, canvas, video, audio, or interactive app, may need an adapter.
 - One persistent profile cannot be used by two browser processes at once.
-- The CLI collects the original only. Codex creates Chinese only after the
-  original passes validation.
+- The collection CLI preserves the original only. Codex runs the staged
+  translation job only after the original passes validation.
 
 #### Development and tests
 
@@ -639,7 +711,8 @@ npm --prefix knowledge-picker test
 
 Tests cover the specialized X path, generic article boundaries, metadata,
 visual rules, image and SVG localization, overwrite refusal, failure
-diagnostics, and rejection of summaries substituted for translation.
+diagnostics, source-bound translation publication, protected numbers/formulas/
+inline code, and rejection of summaries substituted for translation.
 
 See [`site-adapters.md`](knowledge-picker/references/site-adapters.md) for
 adapter rules and
@@ -815,9 +888,22 @@ node course-picker/scripts/prepare.mjs \
   --slides
 ```
 
-After Codex writes chronological `note-body.md` from all transcript chunks, it
-must review every slide candidate and write cache-local `slide-review.json`
-according to the Skill contract before publishing:
+Codex first extracts `knowledge-units.json` from semantically bounded transcript
+chunks with limited overlap, then completes `course-outline.json` and
+`coverage-ledger.json` before drafting and editing chronological `note-body.md`.
+Slide mode also requires a complete cache-local `slide-review.json`.
+
+After the body is stable, create and complete its hash-bound quality review:
+
+```bash
+node course-picker/scripts/note-quality.mjs review \
+  --job "/absolute/path/to/job"
+
+node course-picker/scripts/note-quality.mjs verify \
+  --job "/absolute/path/to/job"
+```
+
+Publish only after that gate passes:
 
 ```bash
 node course-picker/scripts/publish.mjs \
@@ -861,8 +947,10 @@ preparation and publication, recovery after failure, remote-image rejection,
 default video retention and explicit deletion, knowledge-first style,
 chronological course and slide order, complete review partitioning,
 missing/duplicate slide rejection, a non-silent safety ceiling, one sequential
-scan, stable-state grouping, internal-stage recovery, clearer representative
-selection, real FFmpeg candidates, slide-page boundary cropping, and contact sheets.
+scan, stable-state grouping, semantic overlap segmentation, typed knowledge
+coverage, hash-bound body review, internal-stage recovery, clearer
+representative selection, real FFmpeg candidates, slide-page boundary cropping,
+and contact sheets.
 
 ### License
 

@@ -11,6 +11,11 @@ import {
 } from "../knowledge-picker/scripts/collection-core.mjs";
 import { resolveSiteAdapter } from "../knowledge-picker/scripts/site-adapters.mjs";
 import { verifyChineseTranslation } from "../knowledge-picker/scripts/translation-core.mjs";
+import {
+  createAlignmentReview,
+  prepareTranslationJob,
+  publishTranslationJob,
+} from "../knowledge-picker/scripts/translation-job.mjs";
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -625,6 +630,95 @@ captured: 2026-07-28T10:00:00
       verifyChineseTranslation(originalPath, translationPath),
       /structure changed|summary|interpretation/i,
     );
+  } finally {
+    await fs.rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("rejects changed numbers, inline code, and formulas in a translation", async () => {
+  const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-picker-protected-test-"));
+  const originalPath = path.join(temporaryRoot, "source.md");
+  const translationPath = path.join(temporaryRoot, "translation.md");
+  const frontmatter = `---
+title: Protected values
+author:
+source_url: https://example.com/protected
+published:
+captured: 2026-07-28T10:00:00
+---
+
+`;
+  try {
+    await fs.writeFile(originalPath, `${frontmatter}The system keeps 3 stages, calls \`verify()\`, and uses $x = 2$.\n`);
+    await fs.writeFile(translationPath, `${frontmatter}系统保留 4 个阶段，调用 \`verify()\`，并使用 $x = 2$。\n`);
+    await assert.rejects(
+      () => verifyChineseTranslation(originalPath, translationPath),
+      /Numeric values changed/,
+    );
+    await fs.writeFile(translationPath, `${frontmatter}系统保留 3 个阶段，调用 \`validate()\`，并使用 $x = 2$。\n`);
+    await assert.rejects(
+      () => verifyChineseTranslation(originalPath, translationPath),
+      /Inline code/,
+    );
+    await fs.writeFile(translationPath, `${frontmatter}系统保留 3 个阶段，调用 \`verify()\`，并使用 $x = 3$。\n`);
+    await assert.rejects(
+      () => verifyChineseTranslation(originalPath, translationPath),
+      /Math expressions/,
+    );
+  } finally {
+    await fs.rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("publishes only a completed, source-bound translation job", async () => {
+  const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "knowledge-picker-job-test-"));
+  const sourcePath = path.join(temporaryRoot, "Reliable systems.md");
+  const jobDirectory = path.join(temporaryRoot, "job");
+  const source = `---
+title: Reliable systems
+author: Example Author
+source_url: https://example.com/reliable
+published: 2026-07-01
+captured: 2026-07-28T10:00:00
+---
+
+Reliable systems preserve 3 evidence layers before publication.
+`;
+  const translation = `---
+title: Reliable systems
+author: Example Author
+source_url: https://example.com/reliable
+published: 2026-07-01
+captured: 2026-07-28T10:00:00
+---
+
+可靠系统会在发布前保留 3 层证据。
+`;
+  try {
+    await fs.writeFile(sourcePath, source);
+    const prepared = await prepareTranslationJob(sourcePath, { jobDirectory });
+    const brief = JSON.parse(await fs.readFile(prepared.document_brief_path, "utf8"));
+    Object.assign(brief, { domain: "software reliability", audience: "technical readers", tone: "concise and factual" });
+    await fs.writeFile(prepared.document_brief_path, `${JSON.stringify(brief, null, 2)}\n`);
+    const glossary = JSON.parse(await fs.readFile(prepared.glossary_path, "utf8"));
+    glossary.terms.push({
+      source_term: "evidence",
+      preferred_translation: "证据",
+      preserve_english: false,
+      notes: "Use consistently as a reliability term.",
+    });
+    await fs.writeFile(prepared.glossary_path, `${JSON.stringify(glossary, null, 2)}\n`);
+    await fs.writeFile(prepared.translation_draft_path, translation);
+    await fs.writeFile(prepared.translation_final_path, translation);
+    await createAlignmentReview(jobDirectory);
+    await assert.rejects(() => publishTranslationJob(jobDirectory), /not resolved/);
+    const review = JSON.parse(await fs.readFile(prepared.alignment_review_path, "utf8"));
+    review.units = review.units.map((unit) => ({ ...unit, status: "translated" }));
+    await fs.writeFile(prepared.alignment_review_path, `${JSON.stringify(review, null, 2)}\n`);
+    const result = await publishTranslationJob(jobDirectory);
+    assert.equal(result.status, "published");
+    assert.equal(await fs.readFile(result.output_path, "utf8"), translation);
+    assert.equal(await fs.readFile(sourcePath, "utf8"), source);
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
