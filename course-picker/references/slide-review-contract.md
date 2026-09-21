@@ -11,7 +11,12 @@ frames.
    top-to-bottom order. Each candidate records its stable-segment interval,
    quality evidence, OCR, and `crop`: `applied: true` means the extraction
    pipeline detected and cropped an axis-aligned slide page; `applied: false`
-   means it conservatively retained the full candidate.
+   means it conservatively retained the full candidate. For an applied
+   `anchored_split` or `inset_slide` crop, inspect its `temporal_support` and
+   confirm that the recorded bounds consistently isolate the same complete
+   page across at least three time-contiguous stable states. An `inset_slide`
+   must sit near one frame corner, retain all four page edges, and remove the
+   surrounding broadcast chrome.
 2. Inspect every contact sheet in chronological order.
    `auto_collapsed_alternates` records nearby lower-fidelity captures that were
    removed only when OCR overlap and capture-quality evidence were both strong.

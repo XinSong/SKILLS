@@ -78,7 +78,13 @@ When slides are requested, preparation uses one sequential low-resolution scan
 to find stable page states, ranks frames inside each state, and performs
 high-resolution extraction, conservative cropping, and OCR only for the chosen
 representatives. This is the single default pipeline, not a separate repair
-route. Inspect every image in `contact_sheets_directory` and read
+route. Ordinary crops keep the conservative page-area threshold. A smaller
+page may be either left/right-anchored or corner-adjacent within a broadcast
+layout; it is cropped only when complete page geometry, dark exterior evidence,
+full-resolution confirmation, and the same bounds across at least three
+time-contiguous stable states all agree.
+Inspect every image in
+`contact_sheets_directory` and read
 `slide_candidates_index` for the cell-to-file mapping, stable-segment interval,
 quality, crop, and OCR evidence. Inspect individual candidates whenever a sheet
 is ambiguous. Prefer a native digital slide feed over a filmed screen,

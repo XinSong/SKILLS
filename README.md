@@ -280,9 +280,15 @@ YouTube → 完整下载本次所需证据 → 校验并封存本地快照
   处理被中断后，重复原命令会从已验证阶段继续，不需要也不存在另一套“图片修复”
   模式。成功发布后会删除这些派生检查点。
 - 页面裁切使用矩形边缘与常见课件宽高比，只在高置信度时移除浏览器栏、播放器
-  背景、演讲者区域和四周黑边；候选矩形必须至少覆盖原帧 55% 并具有至少三条
-  独立检测到的页面边缘，避免把幻灯片内部的标题框、图表或示意图误当成整页。
-  低置信度时保留候选原帧，交由复核门禁拒绝，不会盲目切掉课件内容。
+  背景、演讲者区域和四周黑边。普通候选矩形仍须至少覆盖原帧 55% 并具有至少
+  三条独立检测到的页面边缘。对于贴在画面左侧或右侧、面积为 40%–55% 的分屏
+  课件，还必须具有完整的上下边界和暗色外部证据；对于四边都位于广播画面内部、
+  面积为 50%–55% 的课件，则还必须靠近画面一个角，并检测到四条页面边缘和四侧
+  暗色外部证据。两种低面积路径都需要全分辨率确认，且只在至少三个时间连续的
+  稳定状态中重复出现相同裁切范围后应用。这样既
+  支持“课件 + 演讲者”和“课件 + 会场条幅”版式，也避免把幻灯片内部的标题框、
+  图表或示意图误当成整页。低置信度时保留候选原帧，交由复核门禁拒绝，不会
+  盲目切掉课件内容。
 - 每个候选都是一个稳定视觉状态的优选代表，而不是固定时间间隔截图。流水线会
   在强证据表明两段只是同一页面的不同采集质量时保留更清晰的一帧；复核仍需逐张
   查看最终原图。原生数字课件画面优先于拍屏、投影或摄像机裁剪画面，不得因为
@@ -759,9 +765,16 @@ YouTube → download all evidence required by this route → seal local snapshot
   removes these derived checkpoints.
 - Cropping combines rectangular edges with common slide aspect ratios. It
   removes browser chrome, player backgrounds, presenter regions, and black
-  borders only at high confidence. A crop must cover at least 55% of the source
-  frame and have at least three independently detected page edges so an internal
-  title box, chart, or diagram cannot masquerade as the whole page.
+  borders only at high confidence. Ordinary crops must cover at least 55% of
+  the source frame and have at least three independently detected page edges.
+  A left- or right-anchored split-screen page covering 40%–55% is accepted only
+  with complete top and bottom boundaries and dark exterior evidence. A fully
+  inset broadcast page covering 50%–55% additionally must sit near one frame
+  corner and requires all four page edges plus dark exterior evidence on all
+  four sides. Both low-area paths need full-resolution confirmation and matching
+  bounds across at least three time-contiguous stable states. This supports
+  slide-plus-presenter and slide-plus-event-banner layouts without letting an
+  internal title box, chart, or diagram masquerade as the whole page.
   Low-confidence candidates remain uncropped and must be rejected during review
   rather than risking lost slide content.
 - Each candidate is the selected representative of a stable visual state, not a

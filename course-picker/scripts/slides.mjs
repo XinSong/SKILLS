@@ -11,14 +11,27 @@ import {
   writeJsonAtomic,
 } from "./video-core.mjs";
 
-const SLIDE_EXTRACTION_VERSION = 8;
+const SLIDE_EXTRACTION_VERSION = 9;
 const SLIDE_ANALYSIS_VERSION = 1;
-const SLIDE_RENDER_VERSION = 3;
+const SLIDE_RENDER_VERSION = 4;
+const CROP_DETECTION_METHOD = "edge-aspect-v4";
 const SLIDE_ASPECT_RATIOS = [4 / 3, 3 / 2, 16 / 10, 16 / 9];
 const MAX_DETECTION_WIDTH = 960;
 const MIN_CROP_AREA_RATIO = 0.55;
+const MIN_SPLIT_CROP_AREA_RATIO = 0.4;
+const MIN_INSET_CROP_AREA_RATIO = 0.5;
+const MAX_SPLIT_CROP_WIDTH_RATIO = 0.75;
+const MIN_SPLIT_CROP_HEIGHT_RATIO = 0.6;
+const MAX_SPLIT_CROP_HEIGHT_RATIO = 0.9;
+const MAX_SPLIT_ASPECT_ERROR = 0.03;
+const MAX_INSET_NEAR_FRAME_RATIO = 0.05;
+const MIN_INSET_OPPOSITE_MARGIN_RATIO = 0.15;
+const MIN_SPLIT_LAYOUT_RUN = 3;
+const MAX_SPLIT_LAYOUT_GAP_SECONDS = 3;
+const SPLIT_LAYOUT_EDGE_TOLERANCE_RATIO = 0.015;
 const MIN_DETECTED_CROP_EDGES = 3;
 const MIN_DARK_EXTERIOR_EDGES = 3;
+const MIN_INSET_DARK_EXTERIOR_EDGES = 4;
 const MIN_EXTERIOR_LUMA_CONTRAST = 28;
 const SCAN_FPS = 2;
 const SCAN_WIDTH = 160;
@@ -365,7 +378,7 @@ function averageLuma(pixels, width, left, top, right, bottom) {
   return samples ? total / samples : null;
 }
 
-function hasDarkExteriorEvidence(pixels, width, height, left, right, top, bottom) {
+function darkExteriorEdgeCount(pixels, width, height, left, right, top, bottom) {
   const band = Math.max(6, Math.floor(Math.min(width, height) * 0.015));
   const inset = Math.max(2, Math.floor(band / 4));
   const comparisons = [
@@ -389,7 +402,114 @@ function hasDarkExteriorEvidence(pixels, width, height, left, right, top, bottom
   const darkExteriorEdges = comparisons.filter(([outside, inside]) => (
     outside !== null && inside !== null && inside - outside >= MIN_EXTERIOR_LUMA_CONTRAST
   )).length;
-  return darkExteriorEdges >= MIN_DARK_EXTERIOR_EDGES;
+  return darkExteriorEdges;
+}
+
+function isAnchoredSplitCandidate({
+  areaRatio,
+  cropHeight,
+  cropWidth,
+  error,
+  height,
+  left,
+  right,
+  top,
+  bottom,
+  width,
+}) {
+  const horizontallyAnchored = left.frame !== right.frame;
+  const verticalPageEdgesDetected = !top.frame && !bottom.frame;
+  const cropWidthRatio = cropWidth / width;
+  const cropHeightRatio = cropHeight / height;
+  return (
+    horizontallyAnchored
+    && verticalPageEdgesDetected
+    && areaRatio >= MIN_SPLIT_CROP_AREA_RATIO
+    && areaRatio < MIN_CROP_AREA_RATIO
+    && cropWidthRatio <= MAX_SPLIT_CROP_WIDTH_RATIO
+    && cropHeightRatio >= MIN_SPLIT_CROP_HEIGHT_RATIO
+    && cropHeightRatio <= MAX_SPLIT_CROP_HEIGHT_RATIO
+    && error <= MAX_SPLIT_ASPECT_ERROR
+  );
+}
+
+function isInsetSlideCandidate({
+  areaRatio,
+  cropHeight,
+  cropWidth,
+  error,
+  height,
+  left,
+  right,
+  top,
+  bottom,
+  width,
+}) {
+  const allPageEdgesDetected = !left.frame && !right.frame && !top.frame && !bottom.frame;
+  const cropWidthRatio = cropWidth / width;
+  const cropHeightRatio = cropHeight / height;
+  const margins = {
+    bottom: (height - bottom.position) / height,
+    left: left.position / width,
+    right: (width - right.position) / width,
+    top: top.position / height,
+  };
+  const cornerAdjacent = (
+    (
+      margins.left <= MAX_INSET_NEAR_FRAME_RATIO
+      && margins.right >= MIN_INSET_OPPOSITE_MARGIN_RATIO
+    )
+    || (
+      margins.right <= MAX_INSET_NEAR_FRAME_RATIO
+      && margins.left >= MIN_INSET_OPPOSITE_MARGIN_RATIO
+    )
+  ) && (
+    (
+      margins.top <= MAX_INSET_NEAR_FRAME_RATIO
+      && margins.bottom >= MIN_INSET_OPPOSITE_MARGIN_RATIO
+    )
+    || (
+      margins.bottom <= MAX_INSET_NEAR_FRAME_RATIO
+      && margins.top >= MIN_INSET_OPPOSITE_MARGIN_RATIO
+    )
+  );
+  return (
+    allPageEdgesDetected
+    && cornerAdjacent
+    && areaRatio >= MIN_INSET_CROP_AREA_RATIO
+    && areaRatio < MIN_CROP_AREA_RATIO
+    && cropWidthRatio <= MAX_SPLIT_CROP_WIDTH_RATIO
+    && cropHeightRatio >= MIN_SPLIT_CROP_HEIGHT_RATIO
+    && cropHeightRatio <= MAX_SPLIT_CROP_HEIGHT_RATIO
+    && error <= MAX_SPLIT_ASPECT_ERROR
+  );
+}
+
+function insetCompletesAnchoredPage(inset, anchored, frameWidth) {
+  if (!inset || !anchored) return false;
+  const tolerance = Math.max(2, Math.round(Math.max(anchored.width, anchored.height) * 0.005));
+  const insetRight = inset.x + inset.width;
+  const anchoredRight = anchored.x + anchored.width;
+  const sameVerticalPage = (
+    Math.abs(inset.y - anchored.y) <= tolerance
+    && Math.abs((inset.y + inset.height) - (anchored.y + anchored.height)) <= tolerance
+  );
+  const horizontallyContained = (
+    inset.x >= anchored.x - tolerance
+    && insetRight <= anchoredRight + tolerance
+  );
+  const anchoredTouchesLeftFrame = anchored.x <= tolerance;
+  const anchoredTouchesRightFrame = Math.abs(anchoredRight - frameWidth) <= tolerance;
+  const sharesOppositePageEdge = (
+    (anchoredTouchesLeftFrame && Math.abs(insetRight - anchoredRight) <= tolerance)
+    || (anchoredTouchesRightFrame && Math.abs(inset.x - anchored.x) <= tolerance)
+  );
+  return (
+    sameVerticalPage
+    && horizontallyContained
+    && sharesOppositePageEdge
+    && inset.width < anchored.width - tolerance
+  );
 }
 
 export function detectSlideBounds(pixels, width, height) {
@@ -410,7 +530,9 @@ export function detectSlideBounds(pixels, width, height) {
     { frame: true, position: height, strength: 0 },
   ].sort((left, right) => left.position - right.position);
 
-  let best = null;
+  let bestStandard = null;
+  let bestAnchoredSplit = null;
+  let bestInsetSlide = null;
   for (let leftIndex = 0; leftIndex < xBounds.length - 1; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < xBounds.length; rightIndex += 1) {
       const left = xBounds[leftIndex];
@@ -429,9 +551,34 @@ export function detectSlideBounds(pixels, width, height) {
           // such rectangles as content, not as permission to crop the page.
           // Conservative full-frame retention is recoverable during review;
           // an over-crop irreversibly removes slide evidence.
-          if (areaRatio < MIN_CROP_AREA_RATIO || areaRatio > 0.985) continue;
+          if (areaRatio > 0.985) continue;
           const error = aspectError(cropWidth, cropHeight);
           if (error > 0.055) continue;
+          const anchoredSplit = isAnchoredSplitCandidate({
+            areaRatio,
+            cropHeight,
+            cropWidth,
+            error,
+            height,
+            left,
+            right,
+            top,
+            bottom,
+            width,
+          });
+          const insetSlide = isInsetSlideCandidate({
+            areaRatio,
+            cropHeight,
+            cropWidth,
+            error,
+            height,
+            left,
+            right,
+            top,
+            bottom,
+            width,
+          });
+          if (areaRatio < MIN_CROP_AREA_RATIO && !anchoredSplit && !insetSlide) continue;
           const nonFrame = [left, right, top, bottom].filter((edge) => !edge.frame);
           // Source-frame edges plus strong internal content edges can form a
           // plausible slide-shaped rectangle even though no page boundary
@@ -439,30 +586,54 @@ export function detectSlideBounds(pixels, width, height) {
           // edges whose exterior is materially darker than the page interior
           // (for example browser chrome, black bars, or a dark lecture room).
           if (nonFrame.length < MIN_DETECTED_CROP_EDGES) continue;
-          if (!hasDarkExteriorEvidence(pixels, width, height, left, right, top, bottom)) continue;
+          const requiredDarkExteriorEdges = insetSlide
+            ? MIN_INSET_DARK_EXTERIOR_EDGES
+            : MIN_DARK_EXTERIOR_EDGES;
+          if (
+            darkExteriorEdgeCount(pixels, width, height, left, right, top, bottom)
+            < requiredDarkExteriorEdges
+          ) continue;
           const edgeStrength = nonFrame.reduce((sum, edge) => sum + edge.strength, 0) / nonFrame.length;
           const aspectStrength = 1 - error / 0.055;
           const confidence = 0.55 * edgeStrength + 0.35 * aspectStrength + 0.1 * areaRatio;
           if (confidence < 0.62) continue;
           const score = 2 * edgeStrength + 3 * aspectStrength + 0.8 * areaRatio + 0.12 * nonFrame.length;
-          if (!best || score > best.score) {
-            best = {
+          const target = anchoredSplit
+            ? bestAnchoredSplit
+            : insetSlide
+              ? bestInsetSlide
+              : bestStandard;
+          if (!target || score > target.score) {
+            const candidate = {
               confidence,
               height: cropHeight,
+              layout: anchoredSplit ? "anchored_split" : insetSlide ? "inset_slide" : "standard",
               score,
               width: cropWidth,
               x: left.position,
               y: top.position,
             };
+            if (anchoredSplit) bestAnchoredSplit = candidate;
+            else if (insetSlide) bestInsetSlide = candidate;
+            else bestStandard = candidate;
           }
         }
       }
     }
   }
+  // Prefer the four-edge page only when it is the contained, clean version of
+  // the same vertically aligned anchored proposal. Otherwise keep the existing
+  // anchored precedence for unrelated rectangles. No low-area proposal is
+  // applied until repeated neighboring stable states confirm the same layout.
+  const bestLowArea = insetCompletesAnchoredPage(bestInsetSlide, bestAnchoredSplit, width)
+    ? bestInsetSlide
+    : bestAnchoredSplit || bestInsetSlide;
+  const best = bestLowArea || bestStandard;
   if (!best) return null;
   return {
     confidence: Number(best.confidence.toFixed(3)),
     height: best.height,
+    layout: best.layout,
     width: best.width,
     x: best.x,
     y: best.y,
@@ -492,6 +663,30 @@ function nearbyBounds(left, right, tolerance) {
     && Math.abs((left.x + left.width) - (right.x + right.width)) <= tolerance
     && Math.abs((left.y + left.height) - (right.y + right.height)) <= tolerance
   );
+}
+
+export function reconcileDetectedBounds({ coarseCrop, coarseDetected, refined, tolerance }) {
+  if (
+    refined
+    && refined.layout === coarseDetected.layout
+    && nearbyBounds(coarseCrop, refined, tolerance)
+  ) {
+    return {
+      crop: {
+        height: refined.height,
+        width: refined.width,
+        x: refined.x,
+        y: refined.y,
+      },
+      detected: refined,
+    };
+  }
+  const lowAreaInvolved = (
+    coarseDetected.layout !== "standard"
+    || (refined && refined.layout !== "standard")
+  );
+  if (lowAreaInvolved) return null;
+  return { crop: coarseCrop, detected: coarseDetected };
 }
 
 async function readRgbImage(imagePath, width, height, ffmpegPath) {
@@ -533,7 +728,7 @@ async function detectCandidateCrop(imagePath, ffmpegPath, ffprobePath) {
       bounds: { height: detectionHeight, width: detectionWidth, x: 0, y: 0 },
       crop: {
         applied: false,
-        method: "edge-aspect-v3",
+        method: CROP_DETECTION_METHOD,
         source_height: source.height,
         source_width: source.width,
       },
@@ -559,32 +754,66 @@ async function detectCandidateCrop(imagePath, ffmpegPath, ffprobePath) {
       8,
       Math.ceil(4 * Math.max(source.width / detectionWidth, source.height / detectionHeight)),
     );
-    if (refined && nearbyBounds(coarseCrop, refined, tolerance)) {
-      selectedBounds = refined;
-      selectedCrop = {
-        height: refined.height,
-        width: refined.width,
-        x: refined.x,
-        y: refined.y,
+    const reconciled = reconcileDetectedBounds({
+      coarseCrop,
+      coarseDetected: detected,
+      refined,
+      tolerance,
+    });
+    if (!reconciled) {
+      return {
+        bounds: { height: source.height, width: source.width, x: 0, y: 0 },
+        crop: {
+          applied: false,
+          method: CROP_DETECTION_METHOD,
+          source_height: source.height,
+          source_width: source.width,
+        },
+        height: source.height,
+        pixels: fullPixels,
+        width: source.width,
       };
+    }
+    selectedBounds = reconciled.detected;
+    selectedCrop = reconciled.crop;
+    if (selectedBounds === refined) {
       selectedHeight = source.height;
       selectedPixels = fullPixels;
       selectedWidth = source.width;
     }
   }
+  const cropEvidence = {
+    confidence: selectedBounds.confidence,
+    height: selectedCrop.height,
+    area_ratio: Number(((selectedCrop.width * selectedCrop.height) / (source.width * source.height)).toFixed(4)),
+    layout: selectedBounds.layout,
+    source_height: source.height,
+    source_width: source.width,
+    width: selectedCrop.width,
+    x: selectedCrop.x,
+    y: selectedCrop.y,
+  };
+  if (selectedBounds.layout !== "standard") {
+    return {
+      bounds: { height: selectedHeight, width: selectedWidth, x: 0, y: 0 },
+      crop: {
+        applied: false,
+        method: CROP_DETECTION_METHOD,
+        proposal: cropEvidence,
+        source_height: source.height,
+        source_width: source.width,
+      },
+      height: selectedHeight,
+      pixels: selectedPixels,
+      width: selectedWidth,
+    };
+  }
   return {
     bounds: selectedBounds,
     crop: {
       applied: true,
-      confidence: selectedBounds.confidence,
-      height: selectedCrop.height,
-      area_ratio: Number(((selectedCrop.width * selectedCrop.height) / (source.width * source.height)).toFixed(4)),
-      method: "edge-aspect-v3",
-      source_height: source.height,
-      source_width: source.width,
-      width: selectedCrop.width,
-      x: selectedCrop.x,
-      y: selectedCrop.y,
+      ...cropEvidence,
+      method: CROP_DETECTION_METHOD,
     },
     height: selectedHeight,
     pixels: selectedPixels,
@@ -912,6 +1141,26 @@ async function renderSegment({ ffmpegPath, ffprobePath, segment, stageDirectory,
   };
 }
 
+function persistedStageCandidate(candidate) {
+  const {
+    absolute_path: _absolutePath,
+    signature: _signature,
+    ...persisted
+  } = candidate;
+  return persisted;
+}
+
+async function writeStageIndex({ candidates, complete, sourceHash, stageIndexPath }) {
+  await writeJsonAtomic(stageIndexPath, {
+    analysis_version: SLIDE_ANALYSIS_VERSION,
+    candidates: candidates.map(persistedStageCandidate),
+    complete,
+    generated_at: new Date().toISOString(),
+    render_version: SLIDE_RENDER_VERSION,
+    source_sha256: sourceHash,
+  });
+}
+
 async function loadOrRenderSegments({
   analysis,
   ffmpegPath,
@@ -957,13 +1206,11 @@ async function loadOrRenderSegments({
     const ordered = analysis.segments
       .map((segment) => renderedBySegment.get(segment.id))
       .filter(Boolean);
-    await writeJsonAtomic(stageIndexPath, {
-      analysis_version: SLIDE_ANALYSIS_VERSION,
+    await writeStageIndex({
       candidates: ordered,
       complete: ordered.length === analysis.segments.length,
-      generated_at: new Date().toISOString(),
-      render_version: SLIDE_RENDER_VERSION,
-      source_sha256: sourceHash,
+      sourceHash,
+      stageIndexPath,
     });
   }
   const ordered = analysis.segments.map((segment) => renderedBySegment.get(segment.id)).filter(Boolean);
@@ -979,6 +1226,194 @@ async function loadOrRenderSegments({
     })),
     render_duration_ms: Date.now() - startedAt,
     rendered_count: pending.length,
+  };
+}
+
+function splitLayoutEvidence(candidate) {
+  const supportedLayouts = new Set(["anchored_split", "inset_slide"]);
+  if (candidate.crop?.applied && supportedLayouts.has(candidate.crop.layout)) return candidate.crop;
+  if (candidate.crop?.proposal && supportedLayouts.has(candidate.crop.proposal.layout)) {
+    return candidate.crop.proposal;
+  }
+  return null;
+}
+
+function sameSplitLayout(left, right) {
+  if (!left || !right) return false;
+  if (left.layout !== right.layout) return false;
+  const normalizedEdges = (value) => [
+    value.x / value.source_width,
+    value.y / value.source_height,
+    (value.x + value.width) / value.source_width,
+    (value.y + value.height) / value.source_height,
+  ];
+  const leftEdges = normalizedEdges(left);
+  const rightEdges = normalizedEdges(right);
+  return leftEdges.every(
+    (value, index) => Math.abs(value - rightEdges[index]) <= SPLIT_LAYOUT_EDGE_TOLERANCE_RATIO,
+  );
+}
+
+export function confirmedSplitLayoutRuns(candidates) {
+  const confirmed = new Map();
+  let run = [];
+  const finishRun = () => {
+    if (run.length >= MIN_SPLIT_LAYOUT_RUN) {
+      const support = {
+        candidate_count: run.length,
+        end_seconds: run.at(-1).candidate.segment_end_seconds,
+        start_seconds: run[0].candidate.segment_start_seconds,
+      };
+      for (const entry of run) confirmed.set(entry.index, support);
+    }
+    run = [];
+  };
+  candidates.forEach((candidate, index) => {
+    const evidence = splitLayoutEvidence(candidate);
+    if (!evidence) {
+      finishRun();
+      return;
+    }
+    const previous = run.at(-1)?.candidate;
+    const gapSeconds = previous
+      ? candidate.segment_start_seconds - previous.segment_end_seconds
+      : 0;
+    const continuous = (
+      Number.isFinite(gapSeconds)
+      && gapSeconds >= 0
+      && gapSeconds <= MAX_SPLIT_LAYOUT_GAP_SECONDS
+    );
+    if (
+      run.length
+      && (!sameSplitLayout(run[0].evidence, evidence) || !continuous)
+    ) finishRun();
+    run.push({ candidate, evidence, index });
+  });
+  finishRun();
+  return confirmed;
+}
+
+async function renderConfirmedSplitCrop({ candidate, crop, ffmpegPath, tesseractPath, videoPath }) {
+  const temporary = path.join(
+    path.dirname(candidate.absolute_path),
+    `.${path.basename(candidate.absolute_path)}.split-full-${process.pid}.png`,
+  );
+  await runCommand(ffmpegPath, [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-nostdin",
+    "-ss",
+    candidate.timestamp_seconds.toFixed(3),
+    "-i",
+    videoPath,
+    "-frames:v",
+    "1",
+    "-vf",
+    "scale='min(1920,iw)':-2",
+    "-y",
+    temporary,
+  ]);
+  try {
+    await runCommand(ffmpegPath, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-nostdin",
+      "-i",
+      temporary,
+      "-frames:v",
+      "1",
+      "-vf",
+      `crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}:exact=1`,
+      "-q:v",
+      "2",
+      "-y",
+      candidate.absolute_path,
+    ]);
+    sniffImage(await fs.readFile(candidate.absolute_path));
+    const analysisWidth = Math.min(MAX_DETECTION_WIDTH, crop.width);
+    const analysisHeight = Math.max(2, Math.round((crop.height * analysisWidth) / crop.width / 2) * 2);
+    const pixels = await readRgbImage(candidate.absolute_path, analysisWidth, analysisHeight, ffmpegPath);
+    const signature = normalizedVisualSignature(
+      pixels,
+      analysisWidth,
+      analysisHeight,
+      { height: analysisHeight, width: analysisWidth, x: 0, y: 0 },
+    );
+    return {
+      dhash: differenceHash(signature),
+      ocr: await readOcr(candidate.absolute_path, tesseractPath),
+      quality: visualMetrics(signature, SIGNATURE_WIDTH, SIGNATURE_HEIGHT),
+      signature,
+    };
+  } finally {
+    await fs.unlink(temporary).catch(() => {});
+  }
+}
+
+async function applyConfirmedSplitLayouts({
+  candidates,
+  ffmpegPath,
+  sourceHash,
+  stageIndexPath,
+  tesseractPath,
+  videoPath,
+}) {
+  const confirmed = confirmedSplitLayoutRuns(candidates);
+  const confirmedByLayout = { anchored_split: 0, inset_slide: 0 };
+  for (const index of confirmed.keys()) {
+    const layout = splitLayoutEvidence(candidates[index])?.layout;
+    if (layout in confirmedByLayout) confirmedByLayout[layout] += 1;
+  }
+  const pending = [...confirmed.entries()]
+    .filter(([index]) => !candidates[index].crop.applied)
+    .map(([index, support]) => ({ candidate: candidates[index], index, support }));
+  const renderedByLayout = { anchored_split: 0, inset_slide: 0 };
+  for (const { candidate } of pending) {
+    const layout = candidate.crop.proposal?.layout;
+    if (layout in renderedByLayout) renderedByLayout[layout] += 1;
+  }
+  const startedAt = Date.now();
+  const concurrency = Math.max(
+    1,
+    Math.min(3, Math.floor((os.availableParallelism?.() || os.cpus().length || 2) / 2)),
+  );
+  for (let offset = 0; offset < pending.length; offset += concurrency) {
+    const batch = pending.slice(offset, offset + concurrency);
+    const completed = await Promise.all(batch.map(async ({ candidate, index, support }) => {
+      const proposal = candidate.crop.proposal;
+      const rendered = await renderConfirmedSplitCrop({
+        candidate,
+        crop: proposal,
+        ffmpegPath,
+        tesseractPath,
+        videoPath,
+      });
+      return {
+        candidate: {
+          ...candidate,
+          ...rendered,
+          crop: {
+            ...proposal,
+            applied: true,
+            method: CROP_DETECTION_METHOD,
+            temporal_support: support,
+          },
+          signature_base64: rendered.signature.toString("base64"),
+        },
+        index,
+      };
+    }));
+    for (const { candidate, index } of completed) candidates[index] = candidate;
+    await writeStageIndex({ candidates, complete: true, sourceHash, stageIndexPath });
+  }
+  return {
+    confirmed_count: confirmed.size,
+    confirmed_by_layout: confirmedByLayout,
+    duration_ms: Date.now() - startedAt,
+    rendered_count: pending.length,
+    rendered_by_layout: renderedByLayout,
   };
 }
 
@@ -1113,6 +1548,14 @@ export async function extractSlideCandidates({
     tesseractPath,
     videoPath,
   });
+  const splitLayouts = await applyConfirmedSplitLayouts({
+    candidates: rendered.candidates,
+    ffmpegPath,
+    sourceHash,
+    stageIndexPath,
+    tesseractPath,
+    videoPath,
+  });
   const selected = selectBestSlideRepresentatives(rendered.candidates);
   if (selected.length > maxCandidates) {
     throw new Error(
@@ -1151,16 +1594,22 @@ export async function extractSlideCandidates({
     stable_segment_count: analysisResult.value.stable_segment_count,
     timings_ms: {
       analysis: analysisResult.cached ? 0 : analysisResult.value.analysis_duration_ms,
-      render: rendered.render_duration_ms,
+      render: rendered.render_duration_ms + splitLayouts.duration_ms,
       total: Date.now() - pipelineStartedAt,
     },
     work: {
       analysis_cache_hit: analysisResult.cached,
       auto_collapsed_count: rendered.candidates.length - selected.length,
-      ocr_count: rendered.rendered_count && tesseractPath ? rendered.rendered_count : 0,
+      ocr_count: tesseractPath ? rendered.rendered_count + splitLayouts.rendered_count : 0,
       rendered_cache_hits: rendered.cached_count,
       rendered_count: rendered.rendered_count,
       sequential_scan_count: analysisResult.cached ? 0 : 1,
+      constrained_layout_crop_count: splitLayouts.confirmed_count,
+      constrained_layout_rendered_count: splitLayouts.rendered_count,
+      inset_slide_crop_count: splitLayouts.confirmed_by_layout.inset_slide,
+      inset_slide_rendered_count: splitLayouts.rendered_by_layout.inset_slide,
+      split_screen_crop_count: splitLayouts.confirmed_by_layout.anchored_split,
+      split_screen_rendered_count: splitLayouts.rendered_by_layout.anchored_split,
     },
   };
   await writeJsonAtomic(indexPath, published);

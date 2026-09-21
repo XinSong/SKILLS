@@ -11,8 +11,10 @@ import {
   verifyNoteQualityJob,
 } from "../course-picker/scripts/note-quality.mjs";
 import {
+  confirmedSplitLayoutRuns,
   detectSlideBounds,
   extractSlideCandidates,
+  reconcileDetectedBounds,
   selectBestSlideRepresentatives,
 } from "../course-picker/scripts/slides.mjs";
 import {
@@ -627,7 +629,7 @@ test("extracts grouped candidates from one sequential scan and defers OCR to sta
     });
     assert.ok(result.candidates.length >= 1);
     assert.ok(result.contact_sheets.length >= 1);
-    assert.equal(result.extraction_version, 8);
+    assert.equal(result.extraction_version, 9);
     assert.equal(result.pipeline, "sequential-stable-state");
     assert.equal(result.work.sequential_scan_count, 1);
     assert.ok(result.scanned_frame_count > result.candidates.length);
@@ -840,7 +842,7 @@ test("crops odd-positioned browser chrome without retaining a one-pixel black bo
     assert.ok(Math.abs(candidate.crop.y - 89) <= 1);
     assert.ok(Math.abs(candidate.crop.width - 1762) <= 1);
     assert.ok(Math.abs(candidate.crop.height - 991) <= 1);
-    assert.equal(candidate.crop.method, "edge-aspect-v3");
+    assert.equal(candidate.crop.method, "edge-aspect-v4");
     const candidatePath = path.join(root, "slide-candidates", candidate.name);
     const size = await probeImageSize(candidatePath, ffprobe);
     assert.equal(size.width, candidate.crop.width);
@@ -849,6 +851,541 @@ test("crops odd-positioned browser chrome without retaining a one-pixel black bo
     for (const [edge, darkRatio] of Object.entries(borderDarkRatios)) {
       assert.ok(darkRatio < 0.01, `${edge} retained a dark exterior border (${darkRatio})`);
     }
+  } finally {
+    await fs.rm(root, { force: true, recursive: true });
+  }
+});
+
+test("crops a repeated anchored split-screen slide layout without lowering the general crop threshold", async (context) => {
+  const ffmpeg = await optionalCommand("ffmpeg");
+  const ffprobe = await optionalCommand("ffprobe");
+  if (!ffmpeg || !ffprobe) {
+    context.skip("ffmpeg or ffprobe is not installed");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-slide-split-screen-test-"));
+  try {
+    const video = path.join(root, "source.mp4");
+    await runCommand(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=black:s=1920x960:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=black:s=1920x960:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=black:s=1920x960:d=3:r=10",
+      "-filter_complex",
+      "[0:v]drawbox=x=0:y=120:w=1280:h=720:color=#fffce8:t=fill," +
+        "drawbox=x=120:y=230:w=420:h=250:color=#b54b5d:t=fill," +
+        "drawbox=x=1400:y=250:w=360:h=460:color=#303840:t=fill[s0];" +
+        "[1:v]drawbox=x=0:y=120:w=1280:h=720:color=#fffce8:t=fill," +
+        "drawbox=x=430:y=300:w=500:h=280:color=#4778b8:t=fill," +
+        "drawbox=x=1400:y=250:w=360:h=460:color=#303840:t=fill[s1];" +
+        "[2:v]drawbox=x=0:y=120:w=1280:h=720:color=#fffce8:t=fill," +
+        "drawbox=x=700:y=210:w=360:h=390:color=#4e9664:t=fill," +
+        "drawbox=x=1400:y=250:w=360:h=460:color=#303840:t=fill[s2];" +
+        "[s0][s1][s2]concat=n=3:v=1:a=0[out]",
+      "-map",
+      "[out]",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      video,
+    ]);
+    const result = await extractSlideCandidates({
+      duration: 9,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-split-screen",
+      videoPath: video,
+    });
+    assert.equal(result.candidates.length, 3);
+    assert.equal(result.work.constrained_layout_crop_count, 3);
+    assert.equal(result.work.inset_slide_crop_count, 0);
+    assert.equal(result.work.split_screen_crop_count, 3);
+    for (const candidate of result.candidates) {
+      assert.equal(candidate.crop.applied, true);
+      assert.equal(candidate.crop.layout, "anchored_split");
+      assert.equal(candidate.crop.method, "edge-aspect-v4");
+      assert.equal(candidate.crop.temporal_support.candidate_count, 3);
+      assert.ok(Math.abs(candidate.crop.area_ratio - 0.5) <= 0.002);
+      assert.ok(Math.abs(candidate.crop.x) <= 1);
+      assert.ok(Math.abs(candidate.crop.y - 120) <= 1);
+      assert.ok(Math.abs(candidate.crop.width - 1280) <= 1);
+      assert.ok(Math.abs(candidate.crop.height - 720) <= 1);
+      const candidatePath = path.join(root, "slide-candidates", candidate.name);
+      assert.deepEqual(await probeImageSize(candidatePath, ffprobe), { height: 720, width: 1280 });
+      const borderDarkRatios = await imageBorderDarkRatios(candidatePath, ffmpeg, ffprobe);
+      for (const [edge, darkRatio] of Object.entries(borderDarkRatios)) {
+        assert.ok(darkRatio < 0.01, `${edge} retained split-screen chrome (${darkRatio})`);
+      }
+    }
+    await fs.rm(path.join(root, "slide-candidates"), { force: true, recursive: true });
+    await fs.rm(path.join(root, "contact-sheets"), { force: true, recursive: true });
+    await fs.unlink(path.join(root, "slide-candidates.json"));
+    const resumed = await extractSlideCandidates({
+      duration: 9,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-split-screen",
+      videoPath: video,
+    });
+    assert.equal(resumed.work.analysis_cache_hit, true);
+    assert.equal(resumed.work.rendered_count, 0);
+    assert.equal(resumed.work.constrained_layout_crop_count, 3);
+    assert.equal(resumed.work.inset_slide_crop_count, 0);
+    assert.equal(resumed.work.split_screen_rendered_count, 0);
+    assert.equal(resumed.work.split_screen_crop_count, 3);
+    assert.ok(resumed.candidates.every((candidate) => candidate.crop.layout === "anchored_split"));
+  } finally {
+    await fs.rm(root, { force: true, recursive: true });
+  }
+});
+
+test("crops a repeated inset broadcast slide without lowering the general crop threshold", async (context) => {
+  const ffmpeg = await optionalCommand("ffmpeg");
+  const ffprobe = await optionalCommand("ffprobe");
+  if (!ffmpeg || !ffprobe) {
+    context.skip("ffmpeg or ffprobe is not installed");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-slide-inset-broadcast-test-"));
+  try {
+    const video = path.join(root, "source.mp4");
+    await runCommand(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#071018:s=1920x1080:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#071018:s=1920x1080:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#071018:s=1920x1080:d=3:r=10",
+      "-filter_complex",
+      "[0:v]drawbox=x=450:y=32:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=650:y=210:w=420:h=250:color=#b54b5d:t=fill," +
+        "drawbox=x=450:y=830:w=1420:h=140:color=#665b28:t=fill," +
+        "drawbox=x=70:y=650:w=360:h=390:color=#304060:t=fill[s0];" +
+        "[1:v]drawbox=x=450:y=32:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=950:y=280:w=500:h=280:color=#4778b8:t=fill," +
+        "drawbox=x=450:y=830:w=1420:h=140:color=#665b28:t=fill," +
+        "drawbox=x=70:y=650:w=360:h=390:color=#304060:t=fill[s1];" +
+        "[2:v]drawbox=x=450:y=32:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=1150:y=190:w=360:h=390:color=#4e9664:t=fill," +
+        "drawbox=x=450:y=830:w=1420:h=140:color=#665b28:t=fill," +
+        "drawbox=x=70:y=650:w=360:h=390:color=#304060:t=fill[s2];" +
+        "[s0][s1][s2]concat=n=3:v=1:a=0[out]",
+      "-map",
+      "[out]",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      video,
+    ]);
+    const result = await extractSlideCandidates({
+      duration: 9,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-inset-broadcast",
+      videoPath: video,
+    });
+    assert.equal(result.candidates.length, 3);
+    assert.equal(result.work.constrained_layout_crop_count, 3);
+    assert.equal(result.work.inset_slide_crop_count, 3);
+    assert.equal(result.work.split_screen_crop_count, 0);
+    for (const candidate of result.candidates) {
+      assert.equal(candidate.crop.applied, true);
+      assert.equal(candidate.crop.layout, "inset_slide");
+      assert.equal(candidate.crop.method, "edge-aspect-v4");
+      assert.equal(candidate.crop.temporal_support.candidate_count, 3);
+      assert.ok(Math.abs(candidate.crop.area_ratio - 0.5466) <= 0.002);
+      assert.ok(Math.abs(candidate.crop.x - 450) <= 1);
+      assert.ok(Math.abs(candidate.crop.y - 32) <= 1);
+      assert.ok(Math.abs(candidate.crop.width - 1420) <= 1);
+      assert.ok(Math.abs(candidate.crop.height - 798) <= 1);
+      const candidatePath = path.join(root, "slide-candidates", candidate.name);
+      assert.deepEqual(await probeImageSize(candidatePath, ffprobe), { height: 798, width: 1420 });
+      const borderDarkRatios = await imageBorderDarkRatios(candidatePath, ffmpeg, ffprobe);
+      for (const [edge, darkRatio] of Object.entries(borderDarkRatios)) {
+        assert.ok(darkRatio < 0.01, `${edge} retained broadcast chrome (${darkRatio})`);
+      }
+    }
+  } finally {
+    await fs.rm(root, { force: true, recursive: true });
+  }
+});
+
+test("prefers a complete inset page over the same page plus narrow frame-edge chrome", () => {
+  const width = 1920;
+  const height = 1080;
+  const pixels = Buffer.alloc(width * height * 3, 8);
+  const fill = (x0, y0, boxWidth, boxHeight, rgb) => {
+    for (let y = y0; y < y0 + boxHeight; y += 1) {
+      for (let x = x0; x < x0 + boxWidth; x += 1) {
+        const offset = (y * width + x) * 3;
+        pixels[offset] = rgb[0];
+        pixels[offset + 1] = rgb[1];
+        pixels[offset + 2] = rgb[2];
+      }
+    }
+  };
+  fill(536, 20, 1364, 767, [252, 250, 232]);
+  fill(720, 190, 420, 250, [181, 75, 93]);
+  fill(536, 787, 1364, 150, [90, 80, 35]);
+  fill(80, 620, 360, 390, [48, 64, 96]);
+  const detected = detectSlideBounds(pixels, width, height);
+  assert.deepEqual(
+    {
+      height: detected.height,
+      layout: detected.layout,
+      width: detected.width,
+      x: detected.x,
+      y: detected.y,
+    },
+    { height: 767, layout: "inset_slide", width: 1364, x: 536, y: 20 },
+  );
+});
+
+test("keeps an anchored page when a contained panel trims both horizontal page edges", () => {
+  const width = 1920;
+  const height = 1080;
+  const pixels = Buffer.alloc(width * height * 3, 8);
+  const fill = (x0, y0, boxWidth, boxHeight, rgb) => {
+    for (let y = y0; y < y0 + boxHeight; y += 1) {
+      for (let x = x0; x < x0 + boxWidth; x += 1) {
+        const offset = (y * width + x) * 3;
+        pixels[offset] = rgb[0];
+        pixels[offset + 1] = rgb[1];
+        pixels[offset + 2] = rgb[2];
+      }
+    }
+  };
+  fill(0, 50, 1411, 794, [125, 125, 125]);
+  fill(50, 50, 1306, 794, [252, 250, 232]);
+  fill(300, 230, 420, 250, [181, 75, 93]);
+  fill(1450, 250, 360, 460, [48, 64, 96]);
+  const detected = detectSlideBounds(pixels, width, height);
+  assert.deepEqual(
+    {
+      height: detected.height,
+      layout: detected.layout,
+      width: detected.width,
+      x: detected.x,
+      y: detected.y,
+    },
+    { height: 794, layout: "anchored_split", width: 1411, x: 0, y: 50 },
+  );
+});
+
+test("does not classify a repeated interior content panel as an inset slide", async (context) => {
+  const ffmpeg = await optionalCommand("ffmpeg");
+  const ffprobe = await optionalCommand("ffprobe");
+  if (!ffmpeg || !ffprobe) {
+    context.skip("ffmpeg or ffprobe is not installed");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-slide-internal-panel-test-"));
+  try {
+    const video = path.join(root, "source.mp4");
+    await runCommand(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#101820:s=1920x1080:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#101820:s=1920x1080:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#101820:s=1920x1080:d=3:r=10",
+      "-filter_complex",
+      "[0:v]drawbox=x=450:y=141:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=650:y=310:w=420:h=250:color=#b54b5d:t=fill[s0];" +
+        "[1:v]drawbox=x=450:y=141:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=950:y=350:w=500:h=280:color=#4778b8:t=fill[s1];" +
+        "[2:v]drawbox=x=450:y=141:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=1150:y=300:w=360:h=390:color=#4e9664:t=fill[s2];" +
+        "[s0][s1][s2]concat=n=3:v=1:a=0[out]",
+      "-map",
+      "[out]",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      video,
+    ]);
+    const result = await extractSlideCandidates({
+      duration: 9,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-internal-panel",
+      videoPath: video,
+    });
+    assert.equal(result.work.constrained_layout_crop_count, 0);
+    assert.equal(result.work.inset_slide_crop_count, 0);
+    assert.equal(result.work.split_screen_crop_count, 0);
+    assert.ok(result.candidates.every((candidate) => candidate.crop.layout !== "inset_slide"));
+    for (const candidate of result.candidates) {
+      const size = await probeImageSize(path.join(root, "slide-candidates", candidate.name), ffprobe);
+      assert.notDeepEqual(size, { height: 798, width: 1420 });
+    }
+  } finally {
+    await fs.rm(root, { force: true, recursive: true });
+  }
+});
+
+test("does not confirm matching inset proposals across long unstable gaps", async (context) => {
+  const ffmpeg = await optionalCommand("ffmpeg");
+  const ffprobe = await optionalCommand("ffprobe");
+  if (!ffmpeg || !ffprobe) {
+    context.skip("ffmpeg or ffprobe is not installed");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-slide-inset-gap-test-"));
+  try {
+    const video = path.join(root, "source.mp4");
+    await runCommand(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#071018:s=1920x1080:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=s=1920x1080:d=5:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#071018:s=1920x1080:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=s=1920x1080:d=5:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#071018:s=1920x1080:d=3:r=10",
+      "-filter_complex",
+      "[0:v]drawbox=x=450:y=32:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=650:y=210:w=420:h=250:color=#b54b5d:t=fill," +
+        "drawbox=x=450:y=830:w=1420:h=140:color=#665b28:t=fill[s0];" +
+        "[2:v]drawbox=x=450:y=32:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=950:y=280:w=500:h=280:color=#4778b8:t=fill," +
+        "drawbox=x=450:y=830:w=1420:h=140:color=#665b28:t=fill[s1];" +
+        "[4:v]drawbox=x=450:y=32:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=1150:y=190:w=360:h=390:color=#4e9664:t=fill," +
+        "drawbox=x=450:y=830:w=1420:h=140:color=#665b28:t=fill[s2];" +
+        "[s0][1:v][s1][3:v][s2]concat=n=5:v=1:a=0[out]",
+      "-map",
+      "[out]",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      video,
+    ]);
+    const result = await extractSlideCandidates({
+      duration: 19,
+      jobDirectory: root,
+      maxCandidates: 20,
+      sourceHash: "synthetic-inset-gaps",
+      videoPath: video,
+    });
+    assert.equal(result.work.constrained_layout_crop_count, 0);
+    assert.equal(result.work.inset_slide_crop_count, 0);
+    assert.equal(result.work.split_screen_crop_count, 0);
+    const proposals = result.candidates.filter((candidate) => candidate.crop.proposal?.layout === "inset_slide");
+    assert.equal(proposals.length, 3);
+    assert.ok(proposals.every((candidate) => candidate.crop.applied === false));
+  } finally {
+    await fs.rm(root, { force: true, recursive: true });
+  }
+});
+
+test("rejects low-area crop proposals when coarse and full-resolution detection disagree", () => {
+  const coarseCrop = { height: 798, width: 1420, x: 450, y: 32 };
+  const inset = { ...coarseCrop, confidence: 0.86, layout: "inset_slide" };
+  const standard = { height: 938, width: 1420, x: 450, y: 32, confidence: 0.71, layout: "standard" };
+  assert.equal(reconcileDetectedBounds({ coarseCrop, coarseDetected: inset, refined: null, tolerance: 8 }), null);
+  assert.equal(
+    reconcileDetectedBounds({ coarseCrop, coarseDetected: standard, refined: inset, tolerance: 8 }),
+    null,
+  );
+  assert.deepEqual(
+    reconcileDetectedBounds({ coarseCrop, coarseDetected: inset, refined: inset, tolerance: 8 }),
+    { crop: coarseCrop, detected: inset },
+  );
+});
+
+test("breaks temporal crop confirmation across discarded unstable time gaps", () => {
+  const proposal = {
+    area_ratio: 0.5465,
+    confidence: 0.86,
+    height: 798,
+    layout: "inset_slide",
+    source_height: 1080,
+    source_width: 1920,
+    width: 1420,
+    x: 450,
+    y: 32,
+  };
+  const candidates = [
+    { crop: { applied: false, proposal }, segment_end_seconds: 2.5, segment_start_seconds: 0, timestamp_seconds: 1 },
+    { crop: { applied: false, proposal }, segment_end_seconds: 12.5, segment_start_seconds: 10, timestamp_seconds: 11 },
+    { crop: { applied: false, proposal }, segment_end_seconds: 22.5, segment_start_seconds: 20, timestamp_seconds: 21 },
+  ];
+  assert.equal(confirmedSplitLayoutRuns(candidates).size, 0);
+});
+
+test("does not apply a transient split-screen proposal without neighboring layout support", async (context) => {
+  const ffmpeg = await optionalCommand("ffmpeg");
+  const ffprobe = await optionalCommand("ffprobe");
+  if (!ffmpeg || !ffprobe) {
+    context.skip("ffmpeg or ffprobe is not installed");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-slide-transient-split-test-"));
+  try {
+    const video = path.join(root, "source.mp4");
+    await runCommand(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=white:s=1920x960:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=black:s=1920x960:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#dddddd:s=1920x960:d=3:r=10",
+      "-filter_complex",
+      "[1:v]drawbox=x=0:y=120:w=1280:h=720:color=#fffce8:t=fill," +
+        "drawbox=x=180:y=250:w=500:h=300:color=#4778b8:t=fill," +
+        "drawbox=x=1400:y=250:w=360:h=460:color=#303840:t=fill[split];" +
+        "[0:v][split][2:v]concat=n=3:v=1:a=0[out]",
+      "-map",
+      "[out]",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      video,
+    ]);
+    const result = await extractSlideCandidates({
+      duration: 9,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-transient-split",
+      videoPath: video,
+    });
+    assert.equal(result.work.constrained_layout_crop_count, 0);
+    assert.equal(result.work.inset_slide_crop_count, 0);
+    assert.equal(result.work.split_screen_crop_count, 0);
+    const proposed = result.candidates.filter((candidate) => candidate.crop.proposal?.layout === "anchored_split");
+    assert.equal(proposed.length, 1);
+    assert.equal(proposed[0].crop.applied, false);
+    assert.deepEqual(
+      await probeImageSize(path.join(root, "slide-candidates", proposed[0].name), ffprobe),
+      { height: 960, width: 1920 },
+    );
+  } finally {
+    await fs.rm(root, { force: true, recursive: true });
+  }
+});
+
+test("does not apply a transient inset-slide proposal without neighboring layout support", async (context) => {
+  const ffmpeg = await optionalCommand("ffmpeg");
+  const ffprobe = await optionalCommand("ffprobe");
+  if (!ffmpeg || !ffprobe) {
+    context.skip("ffmpeg or ffprobe is not installed");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "course-slide-transient-inset-test-"));
+  try {
+    const video = path.join(root, "source.mp4");
+    await runCommand(ffmpeg, [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=white:s=1920x1080:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#071018:s=1920x1080:d=3:r=10",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=#dddddd:s=1920x1080:d=3:r=10",
+      "-filter_complex",
+      "[1:v]drawbox=x=450:y=32:w=1420:h=798:color=#fffce8:t=fill," +
+        "drawbox=x=820:y=240:w=500:h=300:color=#4778b8:t=fill," +
+        "drawbox=x=450:y=830:w=1420:h=140:color=#665b28:t=fill," +
+        "drawbox=x=70:y=650:w=360:h=390:color=#304060:t=fill[inset];" +
+        "[0:v][inset][2:v]concat=n=3:v=1:a=0[out]",
+      "-map",
+      "[out]",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-y",
+      video,
+    ]);
+    const result = await extractSlideCandidates({
+      duration: 9,
+      jobDirectory: root,
+      maxCandidates: 10,
+      sourceHash: "synthetic-transient-inset",
+      videoPath: video,
+    });
+    assert.equal(result.work.constrained_layout_crop_count, 0);
+    assert.equal(result.work.inset_slide_crop_count, 0);
+    assert.equal(result.work.split_screen_crop_count, 0);
+    const proposed = result.candidates.filter((candidate) => candidate.crop.proposal?.layout === "inset_slide");
+    assert.equal(proposed.length, 1);
+    assert.equal(proposed[0].crop.applied, false);
+    assert.deepEqual(
+      await probeImageSize(path.join(root, "slide-candidates", proposed[0].name), ffprobe),
+      { height: 1080, width: 1920 },
+    );
   } finally {
     await fs.rm(root, { force: true, recursive: true });
   }
@@ -894,7 +1431,7 @@ test("keeps a full-frame slide instead of cropping to an internal slide-shaped b
     assert.equal(result.candidates.length, 1);
     const candidate = result.candidates[0];
     assert.equal(candidate.crop.applied, false);
-    assert.equal(candidate.crop.method, "edge-aspect-v3");
+    assert.equal(candidate.crop.method, "edge-aspect-v4");
     const size = await probeImageSize(path.join(root, "slide-candidates", candidate.name), ffprobe);
     assert.deepEqual(size, { height: 1080, width: 1920 });
   } finally {
